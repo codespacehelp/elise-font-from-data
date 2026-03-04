@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Font Editor — nee</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; overflow: hidden; font-family: monospace; background: #111; color: #ddd; }
+    body { display: flex; }
+
+    /* ── Sidebar ── */
+    #sidebar {
+      width: 156px;
+      min-width: 156px;
+      background: #1c1c1c;
+      border-right: 1px solid #333;
+      overflow-y: auto;
+      padding: 6px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 4px;
+      align-content: start;
+    }
+    .glyph-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2px;
+      border-radius: 3px;
+      border: 1px solid transparent;
+      cursor: pointer;
+      gap: 2px;
+    }
+    .glyph-item:hover { background: #2a2a2a; }
+    .glyph-item.active { border-color: #4a9eff; background: #0d1e3a; }
+    .glyph-label { font-size: 10px; color: #555; }
+    .glyph-item.active .glyph-label { color: #4a9eff; }
+
+    /* ── Main area ── */
+    #main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+
+    /* ── Toolbar ── */
+    #toolbar {
+      background: #1c1c1c;
+      border-bottom: 1px solid #333;
+      padding: 6px 10px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+    #toolbar button {
+      background: #252525;
+      color: #bbb;
+      border: 1px solid #444;
+      padding: 4px 10px;
+      border-radius: 3px;
+      cursor: pointer;
+      font-family: monospace;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    #toolbar button:hover { background: #333; color: #fff; }
+    #toolbar button.active { background: #0d2050; border-color: #4a9eff; color: #4a9eff; }
+    #toolbar button:disabled { opacity: 0.35; cursor: default; }
+    .sep { width: 1px; height: 22px; background: #333; margin: 0 2px; }
+    #lbl-active { margin-left: auto; font-size: 12px; color: #555; }
+
+    /* ── Canvas area ── */
+    #canvas-area {
+      flex: 1;
+      overflow: auto;
+      padding: 12px;
+      background: #111;
+    }
+    #editor-canvas { display: block; cursor: crosshair; }
+
+    /* ── JSON panel ── */
+    #json-panel {
+      border-top: 1px solid #333;
+      background: #1c1c1c;
+      padding: 6px 10px;
+      display: flex;
+      gap: 8px;
+      align-items: stretch;
+      flex-shrink: 0;
+    }
+    #json-output {
+      flex: 1;
+      height: 80px;
+      background: #0a0a0a;
+      color: #5bf;
+      border: 1px solid #333;
+      padding: 6px 8px;
+      font-family: monospace;
+      font-size: 11px;
+      resize: vertical;
+      border-radius: 3px;
+      outline: none;
+    }
+    #json-output:focus { border-color: #4a9eff; }
+    #json-buttons { display: flex; flex-direction: column; gap: 5px; }
+    #json-buttons button {
+      background: #252525; color: #bbb; border: 1px solid #444;
+      padding: 4px 12px; border-radius: 3px; cursor: pointer;
+      font-family: monospace; font-size: 12px;
+    }
+    #json-buttons button:hover { background: #333; color: #fff; }
+  </style>
+</head>
+<body>
+  <aside id="sidebar"></aside>
+
+  <div id="main">
+    <div id="toolbar">
+      <button id="btn-add" class="active" title="Shortcut: P">✏ Add</button>
+      <button id="btn-move" title="Shortcut: V">⊹ Select</button>
+      <div class="sep"></div>
+      <button id="btn-undo" disabled title="Cmd/Ctrl+Z">↩ Undo</button>
+      <button id="btn-redo" disabled title="Cmd/Ctrl+Shift+Z">↪ Redo</button>
+      <span id="lbl-active">Editing: a</span>
+    </div>
+
+    <div id="canvas-area">
+      <canvas id="editor-canvas"></canvas>
+    </div>
+
+    <div id="json-panel">
+      <textarea id="json-output" spellcheck="false"></textarea>
+      <div id="json-buttons">
+        <button id="btn-copy">Copy JSON</button>
+        <button id="btn-load">Load JSON</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="editor.js" type="module"></script>
+</body>
+</html>
