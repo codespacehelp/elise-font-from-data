@@ -1,13 +1,20 @@
 const canvas = document.createElement("canvas");
-canvas.width = 1000;
-canvas.height = 1000;
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
 document.body.appendChild(canvas);
 const ctx = canvas.getContext("2d");
 
 const SCALE = 20;
 const MARGIN = 10;
 const MAX_SPEED = 0.005;
-const BASELINE_Y = MARGIN + 13 * SCALE;
+let BASELINE_Y = canvas.height / 2;
+
+window.addEventListener("resize", () => {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  BASELINE_Y = canvas.height / 2;
+  ctx.lineWidth = 2;
+});
 
 let currentFont = null;
 let hue = 30; // red in oklch
@@ -19,8 +26,9 @@ async function main() {
 
   const instances = [
     createInstance("a", 0, 0),
-    createInstance("a", 14, 0),
-    createInstance("a", 28, 0),
+    createInstance("b", 14, 0),
+    createInstance("b", 28, 0),
+    createInstance("a", 42, 0),
   ];
 
   ctx.lineWidth = 2;
@@ -33,10 +41,7 @@ function createInstance(letter, gridX, gridY) {
     gridX,
     gridY,
     points: pts.map(([px, py]) => [px, py]),
-    velocities: pts.map(() => [
-      (Math.random() - 0.5) * 0.004,
-      (Math.random() - 0.5) * 0.004,
-    ]),
+    velocities: pts.map(() => [(Math.random() - 0.5) * 0.004, (Math.random() - 0.5) * 0.004]),
   };
 }
 
