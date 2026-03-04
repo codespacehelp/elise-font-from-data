@@ -10,6 +10,7 @@ const MAX_SPEED = 0.005;
 const BASELINE_Y = MARGIN + 13 * SCALE;
 
 let currentFont = null;
+let hue = 30; // red in oklch
 
 async function main() {
   const res = await fetch("fonts/nee.json");
@@ -73,7 +74,8 @@ function updateInstance(inst) {
 }
 
 function animate(instances) {
-  ctx.strokeStyle = "rgba(0, 0, 0, 0.04)";
+  hue = (hue + 0.05) % 360;
+  ctx.strokeStyle = `oklch(0.3 0.2 ${hue} / 0.04)`;
   for (const inst of instances) {
     drawInstance(inst);
     updateInstance(inst);
