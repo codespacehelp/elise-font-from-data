@@ -7,6 +7,7 @@ const ctx = canvas.getContext("2d");
 const SCALE = 20;
 const MARGIN = 10;
 const MAX_SPEED = 0.005;
+const BASELINE_Y = MARGIN + 13 * SCALE;
 
 let currentFont = null;
 
@@ -43,7 +44,7 @@ function drawInstance(inst) {
   let first = true;
   for (const [px, py] of inst.points) {
     const cx = inst.gridX * SCALE + px * SCALE + MARGIN;
-    const cy = inst.gridY * SCALE + py * SCALE + MARGIN;
+    const cy = BASELINE_Y - inst.gridY * SCALE - py * SCALE;
     if (first) {
       ctx.moveTo(cx, cy);
       first = false;
