@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="nl">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Diatomee — scroll</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { background: #fff; cursor: none; }
+      canvas { position: fixed; top: 0; left: 0; pointer-events: none; }
+      #scroll-space { }
+    </style>
+  </head>
+  <body>
+    <div id="scroll-space"></div>
+    <canvas id="c"></canvas>
+
+    <script>
+      const FONT_PATH  = "../fonts/nee.json";
+      const Y_MAX = 16, Y_MIN = -3, FONT_H = Y_MAX - Y_MIN;
+      const SCALE      = 2.8;
+      const LINE_H     = Math.round(FONT_H * SCALE * 1.5);
+      const MARGIN_X   = 72;
+      const MARGIN_TOP = 90;
+      const SPACE_ADV  = 3;
+      const TOTAL_LINES = 340;
+
+      // Muis: straal waarbinnen punten "aangeraakt" worden
+      const TOUCH_R   = 55;
+      // Straal waarbinnen een live preview zichtbaar is (iets groter)
+      const PREVIEW_R = 90;
+
+      const SOURCE =
+        "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor " +
+        "incididunt ut labore et dolore magna aliqua ut enim ad minim veniam quis nostrud " +
+        "exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat duis aute " +
+        "irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla " +
+        "pariatur excepteur sint occaecat cupidatat non proident sunt in culpa qui officia " +
+        "deserunt mollit anim id est laborum sed perspiciatis unde omnis iste natus error sit " +
+        "voluptatem accusantium doloremque laudantium totam rem aperiam eaque ipsa quae ab " +
+        "illo inventore veritatis et quasi architecto beatae vitae dicta sunt explicabo nemo " +
+        "enim ipsam voluptatem quia voluptas sit aspernatur aut odit aut fugit sed quia " +
+        "consequuntur magni dolores eos qui ratione voluptatem sequi nesciunt neque porro";
+
+      let font = null;
+      let wrappedLines = [];
+      let mouse = { x: -9999, y: -9999 };
+
+      // anchorCache: Map<lineIndex, Array<anchorPoint>>
+      // anchorPoint: { fx, fy_font, outAngle, tangAngle, seed, touched, colony }
+      const anchorCache = new Map();
+
+      const canvas = document.getElementById("c");
+      const ctx    = canvas.getContext("2d");
+
+      // ── Font helpers ──────────────────────────────────────────────────────────
+      function gPts(l) { const g = font.glyphs[l]; return !g ? [] : Array.isArray(g) ? g : (g.points ?? []); }
+      function gLsb(l) { const g = font.glyphs[l]; return !g ? 0 : (font.lsb?.[l] ?? (Array.isArray(g) ? 0 : (g.lsb ?? 0))); }
+      function gAdv(l) {
+        const g = font.glyphs[l]; if (!g) return 0;
+        const pts = gPts(l);
+        const rsb = font.rsb?.[l] ?? (Array.isArray(g) ? 2 : (g.rsb ?? 2));
+        return gLsb(l) + (pts.length ? Math.max(...pts.map(p => p[0])) : 0) + rsb;
+      }
+
+      // ── Word wrap ─────────────────────────────────────────────────────────────
+      function buildWrappedLines() {
+        const maxW = (canvas.width - MARGIN_X * 2) / SCALE;
+        const words = SOURCE.split(" ");
+        const lines = []; let cur = [], curW = 0;
+        for (const word of words) {
+          const ww = word.split("").reduce((s, c) => s + (font.glyphs[c] ? gAdv(c) : 0), 0);
+          const needed = cur.length > 0 ? curW + SPACE_ADV + ww : ww;
+          if (cur.length > 0 && needed > maxW) { lines.push(cur.join(" ")); cur = [word]; curW = ww; }
+          else { if (cur.length > 0) curW += SPACE_ADV; curW += ww; cur.push(word); }
+        }
+        if (cur.length) lines.push(cur.join(" "));
+        wrappedLines = lines;
+        anchorCache.clear();
+      }
+
+      // ── Seeded random ─────────────────────────────────────────────────────────
+      function seededRand(seed) {
+        let s = seed | 0;
+        return () => { s = (s * 1664525 + 1013904223) & 0xffffffff; return (s >>> 0) / 0xffffffff; };
+      }
+
+      // ── Bouw ankerpunten voor één regel (gecached) ────────────────────────────
+      function getAnchors(li, baselineY) {
+        if (!anchorCache.has(li)) {
+          const text = wrappedLines[li % wrappedLines.length];
+          if (!text) return [];
+          const pts = [];
+          let cx = MARGIN_X; let si = 0;
+
+          for (const ch of text) {
+            if (!font.glyphs[ch]) { cx += SPACE_ADV * SCALE; continue; }
+            const fpts = gPts(ch); const lsb = gLsb(ch);
+
+            // Centroïde van dit teken (in pixels)
+            const centFx = cx + (lsb + fpts.reduce((s, p) => s + p[0], 0) / fpts.length) * SCALE;
+            const centFy_font = fpts.reduce((s, p) => s + p[1], 0) / fpts.length;
+
+            for (let i = 0; i < fpts.length; i++) {
+              const [fx, fy] = fpts[i];
+              const next = fpts[Math.min(i + 1, fpts.length - 1)];
+
+              const px = cx + (lsb + fx) * SCALE;
+              const py_font = fy;
+
+              // Uitwaartse richting (weg van centroïde)
+              const odx = px - centFx;
+              const ody_font = -(py_font - centFy_font); // flip y
+              const olen = Math.hypot(odx, ody_font) || 1;
+              const outAngle = Math.atan2(ody_font / olen, odx / olen);
+
+              // Tangentrichting langs de stroke
+              const sdx = (next[0] - fx) * SCALE;
+              const sdy = -(next[1] - fy) * SCALE;
+              const sl  = Math.hypot(sdx, sdy) || 1;
+              const tangAngle = Math.atan2(sdy / sl, sdx / sl);
+
+              pts.push({
+                fx: px,
+                fy_font: py_font,
+                outAngle,
+                tangAngle,
+                seed: (li * 10000 + si) | 0,
+                touched: false,
+                colony: null,
+              });
+              si++;
+            }
+            cx += gAdv(ch) * SCALE;
+          }
+          anchorCache.set(li, pts);
+        }
+
+        // Voeg scroll-afhankelijke y toe
+        return anchorCache.get(li).map(p => ({
+          ...p,
+          x: p.fx,
+          y: baselineY - p.fy_font * SCALE,
+        }));
+      }
+
+      // ── Genereer kolonie-parameters bij eerste aanraking ──────────────────────
+      // Twee types: 'direct' (cirkels recht op het punt) of 'stem' (aftakking + bloei)
+      // Vier groottes: tiny / small / medium / large
+      function generateColony(outAngle, tangAngle, seed) {
+        const rand = seededRand(seed * 31337);
+
+        // Grootte — sterk gewogen naar klein zodat het leesbaar blijft
+        const sizeRoll = rand();
+        const size = sizeRoll < 0.38 ? 'tiny'
+                   : sizeRoll < 0.68 ? 'small'
+                   : sizeRoll < 0.90 ? 'medium'
+                   :                   'large';
+        const ss = { tiny: 0.28, small: 0.55, medium: 0.95, large: 1.5 }[size];
+
+        // Type
+        const type = rand() < 0.52 ? 'direct' : 'stem';
+
+        // Richting
+        const dirRoll = rand();
+        let baseAngle;
+        if      (dirRoll < 0.40) baseAngle = outAngle;
+        else if (dirRoll < 0.62) baseAngle = tangAngle;
+        else if (dirRoll < 0.80) baseAngle = tangAngle + Math.PI;
+        else                     baseAngle = rand() * Math.PI * 2;
+
+        // Kleine jitter op richting
+        baseAngle += (rand() - 0.5) * 0.4;
+
+        if (type === 'direct') {
+          const fullCircle = rand() < 0.08;
+          return {
+            type,
+            baseAngle,
+            cone:    fullCircle ? Math.PI * 2 : Math.PI * (0.25 + rand() * 1.0),
+            numArms: Math.max(2, Math.round((3 + rand() * 9) * ss)),
+            armLen:  (14 + rand() * 38) * ss,
+          };
+        } else {
+          return {
+            type,
+            baseAngle,
+            numStems: Math.max(1, Math.round((1 + rand() * 3) * ss)),
+            stemCone: Math.PI * (0.18 + rand() * 0.55),
+            stemLen:  (12 + rand() * 38) * ss,
+            bloomSpread: (18 + rand() * 38) * ss,
+            numArms: Math.max(2, Math.round((3 + rand() * 7) * ss)),
+          };
+        }
+      }
+
+      // ── Teken directe diatomee-kolonie ────────────────────────────────────────
+      function drawDirectColony(px, py, col, rand, alpha) {
+        const CELL_R = 2.2;
+        const fullCircle = col.cone > Math.PI * 1.8;
+        ctx.save(); ctx.globalAlpha = alpha;
+
+        for (let a = 0; a < col.numArms; a++) {
+          const t = col.numArms > 1 ? a / (col.numArms - 1) : 0.5;
+          const armAngle = fullCircle
+            ? (a / col.numArms) * Math.PI * 2
+            : col.baseAngle + (t - 0.5) * col.cone;
+
+          const bell = fullCircle ? 1 : Math.sin(t * Math.PI);
+          const thisLen = col.armLen * (0.3 + bell * 0.7) * (0.6 + rand() * 0.4);
+          const kink  = (rand() - 0.5) * 0.55;
+          const kSpd  = 0.5 + rand() * 1.5;
+          const nCells = Math.floor(thisLen / (CELL_R * 2.1));
+
+          for (let i = 0; i < nCells; i++) {
+            const frac = i / Math.max(nCells - 1, 1);
+            const ca   = armAngle + kink * Math.sin(frac * Math.PI * kSpd);
+            const dist = CELL_R + i * CELL_R * 2.1;
+            const rx   = CELL_R * (0.85 + rand() * 0.3);
+            const ry   = CELL_R * (0.48 + rand() * 0.28) * (0.85 + rand() * 0.3);
+
+            ctx.save();
+            ctx.translate(px + Math.cos(ca) * dist, py + Math.sin(ca) * dist);
+            ctx.rotate(ca);
+            ctx.beginPath();
+            ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
+            ctx.strokeStyle = "#1a1a1a"; ctx.lineWidth = 0.45;
+            ctx.stroke();
+            ctx.restore();
+          }
+        }
+        ctx.restore();
+      }
+
+      // ── Teken één stengel + bloei ─────────────────────────────────────────────
+      function drawOneStem(px, py, stemAngle, stemLen, bloomSpread, numArms, rand, alpha) {
+        const CELL_R = 2.2;
+        const STEM_RY = Math.max(2, stemLen / 8);
+        const STEM_RX = STEM_RY * 0.22;
+        const nCells  = Math.max(1, Math.floor(stemLen / (STEM_RY * 2)));
+        const kink    = (rand() - 0.5) * 0.45;
+        const kSpd    = 0.8 + rand() * 1.2;
+
+        ctx.save(); ctx.globalAlpha = alpha;
+
+        let curX = px, curY = py;
+        for (let i = 0; i < nCells; i++) {
+          const frac  = i / Math.max(nCells - 1, 1);
+          const angle = stemAngle + kink * Math.sin(frac * Math.PI * kSpd);
+          const mx = curX + Math.cos(angle) * STEM_RY;
+          const my = curY + Math.sin(angle) * STEM_RY;
+
+          ctx.save();
+          ctx.translate(mx, my); ctx.rotate(angle);
+          ctx.beginPath();
+          ctx.ellipse(0, 0, STEM_RY, STEM_RX, 0, 0, Math.PI * 2);
+          ctx.strokeStyle = "#1a1a1a"; ctx.lineWidth = 0.7;
+          ctx.stroke();
+          ctx.restore();
+
+          curX += Math.cos(angle) * STEM_RY * 2;
+          curY += Math.sin(angle) * STEM_RY * 2;
+        }
+
+        const bx = curX, by = curY;
+        const bloomAngle = stemAngle + kink;
+        const bloomCone  = Math.PI * (0.4 + rand() * 0.45);
+
+        ctx.beginPath();
+        ctx.arc(bx, by, 2.5, 0, Math.PI * 2);
+        ctx.strokeStyle = "#1a1a1a"; ctx.lineWidth = 0.8;
+        ctx.stroke();
+
+        for (let a = 0; a < numArms; a++) {
+          const t = numArms > 1 ? a / (numArms - 1) : 0.5;
+          const armAngle = bloomAngle + (t - 0.5) * bloomCone;
+          const bell = Math.sin(t * Math.PI);
+          const thisLen = bloomSpread * (0.3 + bell * 0.7) * (0.6 + rand() * 0.4);
+          const armKink = (rand() - 0.5) * 0.55;
+          const aKSpd   = 0.5 + rand() * 1.5;
+          const nBC = Math.floor(thisLen / (CELL_R * 2.1));
+
+          for (let i = 0; i < nBC; i++) {
+            const frac = i / Math.max(nBC - 1, 1);
+            const ca   = armAngle + armKink * Math.sin(frac * Math.PI * aKSpd);
+            const dist = CELL_R + i * CELL_R * 2.1;
+            const rx = CELL_R * (0.85 + rand() * 0.3);
+            const ry = CELL_R * (0.48 + rand() * 0.28) * (0.85 + rand() * 0.3);
+
+            ctx.save();
+            ctx.translate(bx + Math.cos(ca) * dist, by + Math.sin(ca) * dist);
+            ctx.rotate(ca);
+            ctx.beginPath();
+            ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
+            ctx.strokeStyle = "#1a1a1a"; ctx.lineWidth = 0.45;
+            ctx.stroke();
+            ctx.restore();
+          }
+        }
+        ctx.restore();
+      }
+
+      function drawStemColony(px, py, col, rand, alpha) {
+        for (let s = 0; s < col.numStems; s++) {
+          const t = col.numStems > 1 ? s / (col.numStems - 1) : 0.5;
+          const stemAngle = col.baseAngle + (t - 0.5) * col.stemCone + (rand() - 0.5) * 0.2;
+          const thisLen   = col.stemLen * (0.65 + rand() * 0.7);
+          drawOneStem(px, py, stemAngle, thisLen, col.bloomSpread, col.numArms, rand, alpha);
+        }
+      }
+
+      // ── Render kolonie (permanent of preview) ─────────────────────────────────
+      function renderColony(px, py, col, seed, alpha) {
+        const rand = seededRand(seed);
+        if (col.type === 'direct') drawDirectColony(px, py, col, rand, alpha);
+        else                       drawStemColony(px, py, col, rand, alpha);
+      }
+
+      // ── Teken letter-skelet voor één regel ───────────────────────────────────
+      function drawLetterLine(text, baselineY) {
+        ctx.save();
+        ctx.strokeStyle = "rgba(0,0,0,0.6)";
+        ctx.lineWidth = 1.8;
+        ctx.lineJoin = "round"; ctx.lineCap = "round";
+        let cx = MARGIN_X;
+        for (const ch of text) {
+          if (!font.glyphs[ch]) { cx += SPACE_ADV * SCALE; continue; }
+          const pts = gPts(ch); const lsb = gLsb(ch);
+          ctx.beginPath();
+          ctx.moveTo(cx + (lsb + pts[0][0]) * SCALE, baselineY - pts[0][1] * SCALE);
+          for (let i = 1; i < pts.length; i++)
+            ctx.lineTo(cx + (lsb + pts[i][0]) * SCALE, baselineY - pts[i][1] * SCALE);
+          ctx.stroke();
+          cx += gAdv(ch) * SCALE;
+        }
+        ctx.restore();
+      }
+
+      // ── Hoofdrender-lus ───────────────────────────────────────────────────────
+      function draw() {
+        requestAnimationFrame(draw);
+
+        const scrollY = window.scrollY;
+        const W = canvas.width, H = canvas.height;
+
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, W, H);
+
+        const firstLine    = Math.max(0, Math.floor((scrollY - MARGIN_TOP) / LINE_H) - 1);
+        const visibleCount = Math.ceil(H / LINE_H) + 3;
+
+        for (let i = 0; i < visibleCount; i++) {
+          const li = firstLine + i;
+          if (li >= TOTAL_LINES) break;
+
+          const baselineY = MARGIN_TOP + li * LINE_H + Y_MAX * SCALE - scrollY;
+          if (baselineY < -LINE_H || baselineY > H + LINE_H) continue;
+
+          const text = wrappedLines[li % wrappedLines.length];
+          if (!text) continue;
+
+          drawLetterLine(text, baselineY);
+
+          const anchors = getAnchors(li, baselineY);
+          const rawAnchors = anchorCache.get(li); // voor opslaan van touched state
+
+          for (let ai = 0; ai < anchors.length; ai++) {
+            const ap  = anchors[ai];
+            const raw = rawAnchors[ai];
+
+            const dx   = ap.x - mouse.x;
+            const dy   = ap.y - mouse.y;
+            const dist = Math.hypot(dx, dy);
+
+            // ── Aanraking: genereer en sla kolonie op ──
+            if (!raw.touched && dist < TOUCH_R) {
+              raw.touched = true;
+              raw.colony  = generateColony(ap.outAngle, ap.tangAngle, raw.seed);
+            }
+
+            // ── Permanente kolonie tekenen ──
+            if (raw.touched && raw.colony) {
+              renderColony(ap.x, ap.y, raw.colony, raw.seed + 1, 1.0);
+            }
+            // ── Live preview voor ongeroerde punten in de buurt ──
+            else if (!raw.touched && dist < PREVIEW_R) {
+              const strength = 1 - dist / PREVIEW_R;
+              // Kleine, vage voorproef in de richting weg van de muis
+              const previewCol = {
+                type: 'direct',
+                baseAngle: Math.atan2(dy, dx),
+                cone: Math.PI * 0.5,
+                numArms: 3,
+                armLen: 12 * strength,
+              };
+              renderColony(ap.x, ap.y, previewCol, raw.seed + 99, strength * 0.3);
+            }
+          }
+        }
+
+        // Cursor
+        ctx.beginPath();
+        ctx.arc(mouse.x, mouse.y, 5, 0, Math.PI * 2);
+        ctx.strokeStyle = "rgba(0,0,0,0.3)"; ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+
+      // ── Mouse ─────────────────────────────────────────────────────────────────
+      window.addEventListener("mousemove", e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+      window.addEventListener("mouseleave", () => { mouse.x = -9999; mouse.y = -9999; });
+
+      // ── Resize ────────────────────────────────────────────────────────────────
+      window.addEventListener("resize", () => {
+        canvas.width  = window.innerWidth;
+        canvas.height = window.innerHeight;
+        if (font) buildWrappedLines();
+      }, { passive: true });
+
+      // ── Init ──────────────────────────────────────────────────────────────────
+      fetch(FONT_PATH).then(r => r.json()).then(f => {
+        font = f;
+        canvas.width  = window.innerWidth;
+        canvas.height = window.innerHeight;
+        buildWrappedLines();
+        document.getElementById("scroll-space").style.height =
+          (MARGIN_TOP + TOTAL_LINES * LINE_H + 200) + "px";
+        requestAnimationFrame(draw);
+      });
+    </script>
+  </body>
+</html>

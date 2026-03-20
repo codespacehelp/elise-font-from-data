@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="nl">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Diatomee — scroll groei</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { background: #fff; }
+      canvas { position: fixed; top: 0; left: 0; pointer-events: none; display: block; }
+      #scroll-space { /* hoogte gezet door JS */ }
+    </style>
+  </head>
+  <body>
+    <div id="scroll-space"></div>
+    <canvas id="c"></canvas>
+
+    <script>
+      const FONT_PATH    = "../fonts/nee.json";
+      const Y_MAX = 16, Y_MIN = -3, FONT_H = Y_MAX - Y_MIN;
+      const SCALE        = 2.4;
+      const LINE_H       = Math.round(FONT_H * SCALE * 1.52);
+      const MARGIN_X     = 65;
+      const MARGIN_TOP   = 90;
+      const SPACE_ADV    = 3;
+      const TOTAL_LINES  = 340;
+      const GROWTH_LINES = 270;   // na deze lijn is het effect maximaal
+
+      // Keten-cellen (kleine cirkels langs letterstroken)
+      const CH_R     = 1.55;
+      const CH_SPACE = CH_R * 2.1;
+
+      // Bloei-cellen (ster-armen vanuit knooppunten)
+      const BL_R     = 1.1;
+      const BL_SPACE = BL_R * 2.1;
+
+      const SOURCE =
+        "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor " +
+        "incididunt ut labore et dolore magna aliqua ut enim ad minim veniam quis nostrud " +
+        "exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat duis aute " +
+        "irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla " +
+        "pariatur excepteur sint occaecat cupidatat non proident sunt in culpa qui officia " +
+        "deserunt mollit anim id est laborum sed perspiciatis unde omnis iste natus error sit " +
+        "voluptatem accusantium doloremque laudantium totam rem aperiam eaque ipsa quae ab " +
+        "illo inventore veritatis et quasi architecto beatae vitae dicta sunt explicabo nemo " +
+        "enim ipsam voluptatem quia voluptas sit aspernatur aut odit aut fugit sed quia " +
+        "consequuntur magni dolores eos qui ratione voluptatem sequi nesciunt neque porro";
+
+      let font        = null;
+      let wrappedLines = [];
+      let glyphCache  = {};
+      let rafPending  = false;
+
+      const canvas = document.getElementById("c");
+      const ctx    = canvas.getContext("2d");
+
+      // ── Font helpers ─────────────────────────────────────────────────────────
+      function gPts(l) { const g = font.glyphs[l]; return !g ? [] : Array.isArray(g) ? g : (g.points ?? []); }
+      function gLsb(l) { const g = font.glyphs[l]; return !g ? 0 : (font.lsb?.[l] ?? (Array.isArray(g) ? 0 : (g.lsb ?? 0))); }
+      function gAdv(l) {
+        const g = font.glyphs[l]; if (!g) return 0;
+        const pts = gPts(l);
+        const rsb = font.rsb?.[l] ?? (Array.isArray(g) ? 2 : (g.rsb ?? 2));
+        return gLsb(l) + (pts.length ? Math.max(...pts.map(p => p[0])) : 0) + rsb;
+      }
+
+      // ── Seeded random ────────────────────────────────────────────────────────
+      function seededRand(seed) {
+        let s = seed | 0;
+        return () => { s = (s * 1664525 + 1013904223) & 0xffffffff; return (s >>> 0) / 0xffffffff; };
+      }
+
+      // ── Glyph cache: knooppunten en segmenten per letter ─────────────────────
+      function buildGlyph(ch) {
+        if (glyphCache[ch]) return glyphCache[ch];
+        const pts = gPts(ch), lsb = gLsb(ch);
+        const nodes = [], segments = [];
+        for (let i = 0; i < pts.length; i++) {
+          nodes.push({ lx: (lsb + pts[i][0]) * SCALE, ly_font: pts[i][1] });
+          if (i > 0) {
+            const lx0 = (lsb + pts[i-1][0]) * SCALE, ly0 = pts[i-1][1];
+            const lx1 = (lsb + pts[i][0])   * SCALE, ly1 = pts[i][1];
+            const len = Math.hypot(lx1 - lx0, (ly1 - ly0) * SCALE);
+            if (len > 0.5) segments.push({ lx0, ly0, lx1, ly1, len, si: i });
+          }
+        }
+        glyphCache[ch] = { nodes, segments };
+        return glyphCache[ch];
+      }
+
+      // ── Groei-curve: level 1 (puntjes) → 12 (grote bloei) met diepte ─────────
+      function getLevel(lineIdx) {
+        const t = Math.min(1, lineIdx / GROWTH_LINES);
+        return 1 + 11 * Math.pow(t, 1.2);
+      }
+
+      // ── Voeg één halve keten toe aan een open path ────────────────────────────
+      function pathHalfChain(sx, sy, angle, maxDist, rand) {
+        const kink  = (rand() - 0.5) * 3.5;
+        const kFreq = 0.45 + rand() * 1.4;
+        const perX  = -Math.sin(angle), perY = Math.cos(angle);
+        let dist = CH_R, i = 0;
+        while (dist <= maxDist) {
+          const perp = kink * Math.sin(i * kFreq * 0.55);
+          const cx = sx + Math.cos(angle) * dist + perX * perp;
+          const cy = sy + Math.sin(angle) * dist + perY * perp;
+          const rv = 1.0 + (rand() - 0.5) * 0.2;
+          const r  = CH_R * rv;
+          ctx.moveTo(cx + r, cy);
+          ctx.arc(cx, cy, r, 0, Math.PI * 2);
+          dist += CH_SPACE; i++;
+        }
+      }
+
+      // ── Voeg één bloei-arm toe aan een open path ──────────────────────────────
+      function pathBloomArm(sx, sy, angle, armLen, rand) {
+        const kink  = (rand() - 0.5) * 2.8;
+        const kFreq = 0.5 + rand() * 1.2;
+        const perX  = -Math.sin(angle), perY = Math.cos(angle);
+        let dist = BL_R * 2.2, i = 0;
+        while (dist <= armLen) {
+          const perp = kink * Math.sin(i * kFreq * 0.5);
+          const cx = sx + Math.cos(angle) * dist + perX * perp;
+          const cy = sy + Math.sin(angle) * dist + perY * perp;
+          const rv = 1.0 + (rand() - 0.5) * 0.28;
+          const r  = BL_R * rv;
+          ctx.moveTo(cx + r, cy);
+          ctx.arc(cx, cy, r, 0, Math.PI * 2);
+          dist += BL_SPACE; i++;
+        }
+      }
+
+      // ── Render één tekstregel ─────────────────────────────────────────────────
+      function renderLine(lineIdx, baselineY) {
+        const text  = wrappedLines[lineIdx % wrappedLines.length];
+        if (!text) return;
+
+        const level  = getLevel(lineIdx);
+        // chainT: 0 bij level 1 (enkel puntjes), 1 bij level 4 (ketens vol)
+        const chainT  = Math.max(0, Math.min((level - 1) / 3, 1));
+        // bloomL: 0 tot level 4.5, daarna bloei
+        const bloomL  = Math.max(0, level - 4.5);
+        const numArms = Math.min(Math.floor(bloomL * 2.8), 10);
+        const armLen  = Math.min(bloomL * 6.5, 52);
+
+        // Unique seed per char-positie in deze lijn
+        let cx = MARGIN_X, ci = 0;
+        const charData = [];
+        for (const ch of text) {
+          if (!font.glyphs[ch]) { cx += SPACE_ADV * SCALE; ci++; continue; }
+          charData.push({ ch, ox: cx, seed: (lineIdx * 997 + ci * 31) | 0 });
+          cx += gAdv(ch) * SCALE;
+          ci++;
+        }
+
+        // ── Laag 1: stippen (gebatcht) ─────────────────────────────────────────
+        const dotR     = Math.max(0.6, 1.1 - chainT * 0.35);
+        const dotAlpha = Math.max(0.08, 0.62 - chainT * 0.28);
+        ctx.beginPath();
+        for (const { ch, ox } of charData) {
+          const glyph = buildGlyph(ch);
+          for (const nd of glyph.nodes) {
+            const px = ox + nd.lx, py = baselineY - nd.ly_font * SCALE;
+            ctx.moveTo(px + dotR, py);
+            ctx.arc(px, py, dotR, 0, Math.PI * 2);
+          }
+        }
+        ctx.fillStyle = `rgba(0,0,0,${dotAlpha.toFixed(2)})`;
+        ctx.fill();
+
+        // ── Laag 2: ketens langs letterstroken (gebatcht) ──────────────────────
+        if (chainT > 0.01) {
+          ctx.beginPath();
+          for (const { ch, ox, seed } of charData) {
+            const glyph = buildGlyph(ch);
+            for (let si = 0; si < glyph.segments.length; si++) {
+              const seg = glyph.segments[si];
+              const x0 = ox + seg.lx0, y0 = baselineY - seg.ly0 * SCALE;
+              const x1 = ox + seg.lx1, y1 = baselineY - seg.ly1 * SCALE;
+              const angle   = Math.atan2(y1 - y0, x1 - x0);
+              const maxDist = seg.len * 0.5 * Math.min(chainT, 1.03);
+              if (maxDist >= CH_R) {
+                pathHalfChain(x0, y0, angle,            maxDist, seededRand(seed * 10007 + si * 3 + 1));
+                pathHalfChain(x1, y1, angle + Math.PI,  maxDist, seededRand(seed * 10007 + si * 3 + 2));
+              }
+            }
+          }
+          ctx.strokeStyle = "#111";
+          ctx.lineWidth   = 0.5;
+          ctx.stroke();
+        }
+
+        // ── Laag 3: ster-bloei vanuit knooppunten (gebatcht) ──────────────────
+        if (numArms > 0 && armLen > 0) {
+          ctx.beginPath();
+          for (const { ch, ox, seed } of charData) {
+            const glyph = buildGlyph(ch);
+            for (let ni = 0; ni < glyph.nodes.length; ni++) {
+              const nd = glyph.nodes[ni];
+              const px = ox + nd.lx, py = baselineY - nd.ly_font * SCALE;
+              const rand = seededRand(seed * 997 + ni * 13);
+              const angleOffset = rand() * Math.PI * 2;
+              for (let a = 0; a < numArms; a++) {
+                const aRand   = seededRand(seed * 1000 + ni * 100 + a * 37);
+                const thisLen = armLen * (0.5 + aRand() * 0.5);
+                const angle   = angleOffset + (a / numArms) * Math.PI * 2 + (aRand() - 0.5) * 0.3;
+                pathBloomArm(px, py, angle, thisLen, seededRand(seed * 9999 + ni * 50 + a));
+              }
+            }
+          }
+          ctx.strokeStyle = "#111";
+          ctx.lineWidth   = 0.4;
+          ctx.stroke();
+        }
+      }
+
+      // ── Hoofdrender ──────────────────────────────────────────────────────────
+      function render() {
+        rafPending = false;
+        const scrollY = window.scrollY;
+        const W = canvas.width, H = canvas.height;
+
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, W, H);
+
+        const firstLine    = Math.max(0, Math.floor((scrollY - MARGIN_TOP) / LINE_H) - 1);
+        const visibleCount = Math.ceil(H / LINE_H) + 3;
+
+        for (let i = 0; i < visibleCount; i++) {
+          const li = firstLine + i;
+          if (li >= TOTAL_LINES) break;
+          const baselineY = MARGIN_TOP + li * LINE_H + Y_MAX * SCALE - scrollY;
+          if (baselineY < -LINE_H || baselineY > H + LINE_H) continue;
+          renderLine(li, baselineY);
+        }
+      }
+
+      function scheduleRender() {
+        if (!rafPending) { rafPending = true; requestAnimationFrame(render); }
+      }
+
+      // ── Word wrap ────────────────────────────────────────────────────────────
+      function buildWrappedLines() {
+        const maxW = (canvas.width - MARGIN_X * 2) / SCALE;
+        const words = SOURCE.split(" ");
+        const lines = []; let cur = [], curW = 0;
+        for (const word of words) {
+          const ww = word.split("").reduce((s, c) => s + (font.glyphs[c] ? gAdv(c) : 0), 0);
+          const needed = cur.length > 0 ? curW + SPACE_ADV + ww : ww;
+          if (cur.length > 0 && needed > maxW) { lines.push(cur.join(" ")); cur = [word]; curW = ww; }
+          else { if (cur.length > 0) curW += SPACE_ADV; curW += ww; cur.push(word); }
+        }
+        if (cur.length) lines.push(cur.join(" "));
+        wrappedLines = lines;
+      }
+
+      // ── Resize ────────────────────────────────────────────────────────────────
+      function resize() {
+        canvas.width  = window.innerWidth  || document.documentElement.clientWidth  || 1280;
+        canvas.height = window.innerHeight || document.documentElement.clientHeight || 900;
+        if (font) { buildWrappedLines(); scheduleRender(); }
+      }
+
+      // ── Init ─────────────────────────────────────────────────────────────────
+      window.addEventListener("resize", resize, { passive: true });
+      window.addEventListener("scroll", scheduleRender, { passive: true });
+
+      fetch(FONT_PATH).then(r => r.json()).then(f => {
+        font = f;
+        resize();
+        document.getElementById("scroll-space").style.height =
+          (MARGIN_TOP + TOTAL_LINES * LINE_H + 200) + "px";
+        render();
+      });
+    </script>
+  </body>
+</html>

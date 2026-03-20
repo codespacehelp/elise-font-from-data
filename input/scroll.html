@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="nl">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Groei — eindeloze tekst</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html { background: #fff; }
+      body { background: #fff; }
+      canvas {
+        position: fixed;
+        top: 0; left: 0;
+        display: block;
+        pointer-events: none;
+      }
+      #scroll-space { /* height set by JS */ }
+    </style>
+  </head>
+  <body>
+    <div id="scroll-space"></div>
+    <canvas id="c"></canvas>
+
+    <script>
+      // ── Config ────────────────────────────────────────────────────────────────────
+      const FONT_PATH  = "../fonts/nee.json";
+      const Y_MAX      = 16;   // font cap height in font units
+      const Y_MIN      = -3;   // font descender in font units
+      const FONT_H     = Y_MAX - Y_MIN;  // 19 units total
+
+      const SCALE        = 1.4;   // px per font unit → cap height ≈ 22px (broodtekst)
+      const LINE_HEIGHT  = Math.round(FONT_H * SCALE * 1.45);  // ≈ 39px
+      const MARGIN_X     = 68;    // left & right margin in px
+      const MARGIN_TOP   = 80;    // top margin in px
+      const SPACE_ADV    = 3;     // advance for spaces, in font units
+      const SAMPLE_SP    = 0.45;  // sample spacing along letter outline (font units)
+
+      const GROWTH_LINES = 290;   // after this many lines, shapes are fully grown
+      const TOTAL_LINES  = 480;   // total virtual lines (determines scroll height)
+
+      // PCB shape types (from resonantie.html)
+      const SHAPES = ["via", "pad", "smd", "tracepad", "trace"];
+
+      // Text source — Dutch / Latin lorem ipsum (all lowercase, matching font)
+      const SOURCE =
+        "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor " +
+        "incididunt ut labore et dolore magna aliqua ut enim ad minim veniam quis nostrud " +
+        "exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat duis aute " +
+        "irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla " +
+        "pariatur excepteur sint occaecat cupidatat non proident sunt in culpa qui officia " +
+        "deserunt mollit anim id est laborum sed perspiciatis unde omnis iste natus error sit " +
+        "voluptatem accusantium doloremque laudantium totam rem aperiam eaque ipsa quae ab " +
+        "illo inventore veritatis et quasi architecto beatae vitae dicta sunt explicabo nemo " +
+        "enim ipsam voluptatem quia voluptas sit aspernatur aut odit aut fugit sed quia " +
+        "consequuntur magni dolores eos qui ratione voluptatem sequi nesciunt neque porro";
+
+      // ── State ──────────────────────────────────────────────────────────────────────
+      let font        = null;
+      let wrappedLines = [];
+      let rafPending  = false;
+
+      const canvas = document.getElementById("c");
+      const ctx    = canvas.getContext("2d");
+
+      // ── Font helpers ──────────────────────────────────────────────────────────────
+      function gPts(l) {
+        const g = font.glyphs[l];
+        return !g ? [] : Array.isArray(g) ? g : (g.points ?? []);
+      }
+      function gLsb(l) {
+        const g = font.glyphs[l];
+        return !g ? 0 : (font.lsb?.[l] ?? (Array.isArray(g) ? 0 : (g.lsb ?? 0)));
+      }
+      function gAdv(l) {
+        const g = font.glyphs[l];
+        if (!g) return 0;
+        const pts = gPts(l);
+        const rsb = font.rsb?.[l] ?? (Array.isArray(g) ? 2 : (g.rsb ?? 2));
+        return gLsb(l) + (pts.length ? Math.max(...pts.map(p => p[0])) : 0) + rsb;
+      }
+
+      // ── Sample points along a letter outline ──────────────────────────────────────
+      function samplePath(pts) {
+        if (!pts || pts.length < 2) return pts ? [...pts] : [];
+        const out = [];
+        for (let i = 0; i < pts.length - 1; i++) {
+          const [x0, y0] = pts[i], [x1, y1] = pts[i + 1];
+          const steps = Math.max(1, Math.floor(Math.hypot(x1 - x0, y1 - y0) / SAMPLE_SP));
+          for (let s = 0; s < steps; s++) {
+            out.push([x0 + (x1 - x0) * s / steps, y0 + (y1 - y0) * s / steps]);
+          }
+        }
+        out.push([...pts[pts.length - 1]]);
+        return out;
+      }
+
+      // ── Cache: pre-sampled letter outlines ────────────────────────────────────────
+      const sampledGlyphs = {};
+      function getSampled(l) {
+        if (!sampledGlyphs[l]) sampledGlyphs[l] = samplePath(gPts(l));
+        return sampledGlyphs[l];
+      }
+
+      // ── Word wrap ─────────────────────────────────────────────────────────────────
+      function buildWrappedLines(canvasW) {
+        const maxW = (canvasW - MARGIN_X * 2) / SCALE;
+        const words = SOURCE.split(" ");
+        const lines = [];
+        let cur = [], curW = 0;
+
+        for (const word of words) {
+          const ww = word.split("").reduce((s, c) => s + (font.glyphs[c] ? gAdv(c) : 0), 0);
+          const needed = cur.length > 0 ? curW + SPACE_ADV + ww : ww;
+          if (cur.length > 0 && needed > maxW) {
+            lines.push(cur.join(" "));
+            cur = [word]; curW = ww;
+          } else {
+            if (cur.length > 0) curW += SPACE_ADV;
+            curW += ww;
+            cur.push(word);
+          }
+        }
+        if (cur.length > 0) lines.push(cur.join(" "));
+        wrappedLines = lines;
+      }
+
+      // ── Stable hash (per sample point → shape type) ───────────────────────────────
+      function hashInt(x) {
+        x = Math.imul(x ^ (x >>> 16), 0x45d9f3b);
+        x = Math.imul(x ^ (x >>> 16), 0x45d9f3b);
+        return (x ^ (x >>> 16)) >>> 0;
+      }
+      function shapeForPoint(lineIdx, charGlobal, sampleIdx) {
+        const h = hashInt(lineIdx * 7919 + charGlobal * 1619 + sampleIdx * 31);
+        return SHAPES[h % SHAPES.length];
+      }
+
+      // ── Growth curve: quadratic ease-in — text stays readable for a long while,
+      //    then shapes accelerate as scroll continues ─────────────────────────────────
+      function getGrowth(lineIndex) {
+        const t = Math.min(1, lineIndex / GROWTH_LINES);
+        return t * t;  // t² → very slow start, faster toward end
+      }
+
+      // ── Add PCB shape sub-path (no beginPath — caller batches) ───────────────────
+      function addPCBSubPath(oc, cx, cy, type, r) {
+        switch (type) {
+
+          case "via": {
+            oc.moveTo(cx + r, cy);
+            oc.arc(cx, cy, r, 0, Math.PI * 2);
+            const iR = r * 0.42;
+            oc.moveTo(cx + iR, cy);
+            oc.arc(cx, cy, iR, 0, Math.PI * 2);
+            break;
+          }
+
+          case "pad": {
+            const pw = r * 1.35, ph = r * 0.52;
+            if (oc.roundRect) oc.roundRect(cx - pw, cy - ph, pw * 2, ph * 2, ph);
+            else oc.rect(cx - pw, cy - ph, pw * 2, ph * 2);
+            break;
+          }
+
+          case "smd": {
+            const s = r * 0.86;
+            oc.rect(cx - s, cy - s, s * 2, s * 2);
+            break;
+          }
+
+          case "tracepad": {
+            const pR = r * 0.40, dist = r * 0.82, trH = r * 0.26;
+            oc.moveTo(cx - dist + pR, cy);
+            oc.arc(cx - dist, cy, pR, 0, Math.PI * 2);
+            oc.moveTo(cx + dist + pR, cy);
+            oc.arc(cx + dist, cy, pR, 0, Math.PI * 2);
+            const tx = -dist + pR * 0.70;
+            oc.moveTo(cx + tx, cy - trH); oc.lineTo(cx - tx, cy - trH);
+            oc.lineTo(cx - tx, cy + trH); oc.lineTo(cx + tx, cy + trH);
+            oc.closePath();
+            break;
+          }
+
+          case "trace": {
+            const th = r * 0.16;
+            oc.rect(cx - r, cy - th, r * 2, th * 2);
+            break;
+          }
+        }
+      }
+
+      // ── Render one text line ───────────────────────────────────────────────────────
+      //
+      //   Twee lagen die langs elkaar heen overvloeien:
+      //
+      //   • Laag 1 — gevulde cirkeltjes (r = 1px, vast)
+      //     Vormen de letters als een ketting van scherpe stippen.
+      //     Vervaagt naarmate de PCB-figuren overnemen.
+      //
+      //   • Laag 2 — PCB-figuren (r groeit met scroll)
+      //     Komen op uit growth ≈ 0.08, volledig zichtbaar bij growth ≈ 0.4.
+      //     Stroked (geen fill) zodat de vormen herkenbaar blijven.
+      //
+      function renderLine(oc, lineIndex, baselineY, growth) {
+        if (!wrappedLines.length) return;
+        const text = wrappedLines[lineIndex % wrappedLines.length];
+        if (!text) return;
+
+        const DOT_R = 1.0;  // vaste radius voor de stippenlaag
+
+        // ── Laag 1: stippen — scherpe, gevulde kleine cirkels ────────────────────
+        // Volledig zichtbaar bij growth 0, verdwenen bij growth 0.55
+        const dotAlpha = Math.max(0, 1 - growth / 0.55);
+
+        if (dotAlpha > 0.004) {
+          oc.save();
+          oc.globalAlpha = dotAlpha;
+          oc.fillStyle = "#111";
+          oc.beginPath();
+
+          let cx = MARGIN_X;
+          for (const ch of text) {
+            if (!font.glyphs[ch]) { cx += SPACE_ADV * SCALE; continue; }
+            const samples = getSampled(ch);
+            const lsb = gLsb(ch);
+            for (const [fx, fy] of samples) {
+              const px = cx + lsb * SCALE + fx * SCALE;
+              const py = baselineY - fy * SCALE;
+              oc.moveTo(px + DOT_R, py);
+              oc.arc(px, py, DOT_R, 0, Math.PI * 2);
+            }
+            cx += gAdv(ch) * SCALE;
+          }
+          oc.fill();
+          oc.restore();
+        }
+
+        // ── Laag 2: PCB-figuren — stroked, groeien met scroll ────────────────────
+        const shapesAlpha = Math.min(1, Math.max(0, (growth - 0.08) / 0.32));
+
+        if (shapesAlpha > 0.004) {
+          const r  = growth * 30;
+          const lw = Math.max(0.5, 0.4 + growth * 1.4);
+
+          oc.save();
+          oc.globalAlpha = shapesAlpha;
+          oc.strokeStyle = "#111";
+          oc.lineWidth   = lw;
+
+          // Alle vormen per regel in één pad → één stroke-aanroep
+          oc.beginPath();
+          let cx = MARGIN_X;
+          let charGlobal = lineIndex * 2000;
+
+          for (const ch of text) {
+            if (!font.glyphs[ch]) { cx += SPACE_ADV * SCALE; charGlobal++; continue; }
+            const samples = getSampled(ch);
+            const lsb = gLsb(ch);
+
+            for (let si = 0; si < samples.length; si++) {
+              const [fx, fy] = samples[si];
+              addPCBSubPath(oc,
+                cx + lsb * SCALE + fx * SCALE,
+                baselineY - fy * SCALE,
+                shapeForPoint(lineIndex, charGlobal, si),
+                r
+              );
+            }
+            cx += gAdv(ch) * SCALE;
+            charGlobal++;
+          }
+          oc.stroke();
+          oc.restore();
+        }
+      }
+
+      // ── Main render (rechtstreeks op ctx, geen offscreen XOR) ─────────────────────
+      function render() {
+        rafPending = false;
+        const scrollY = window.scrollY;
+        const W = canvas.width, H = canvas.height;
+
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, W, H);
+
+        const firstLine    = Math.max(0, Math.floor((scrollY - MARGIN_TOP) / LINE_HEIGHT) - 1);
+        const visibleCount = Math.ceil(H / LINE_HEIGHT) + 3;
+
+        for (let i = 0; i < visibleCount; i++) {
+          const li = firstLine + i;
+          if (li >= TOTAL_LINES) break;
+
+          const baselineY = MARGIN_TOP + li * LINE_HEIGHT + Y_MAX * SCALE - scrollY;
+          if (baselineY < -LINE_HEIGHT || baselineY > H + LINE_HEIGHT) continue;
+
+          renderLine(ctx, li, baselineY, getGrowth(li));
+        }
+      }
+
+      // ── Scroll handler with rAF debounce ─────────────────────────────────────────
+      function scheduleRender() {
+        if (!rafPending) {
+          rafPending = true;
+          requestAnimationFrame(render);
+        }
+      }
+
+      // ── Resize ────────────────────────────────────────────────────────────────────
+      function resize() {
+        canvas.width  = window.innerWidth  || document.documentElement.clientWidth  || 1280;
+        canvas.height = window.innerHeight || document.documentElement.clientHeight || 900;
+        if (font) {
+          buildWrappedLines(canvas.width);
+          scheduleRender();
+        }
+      }
+
+      // ── Init ──────────────────────────────────────────────────────────────────────
+      function init() {
+        canvas.width  = window.innerWidth  || document.documentElement.clientWidth  || 1280;
+        canvas.height = window.innerHeight || document.documentElement.clientHeight || 900;
+
+        // Set scroll height
+        const totalH = MARGIN_TOP + TOTAL_LINES * LINE_HEIGHT + 200;
+        document.getElementById("scroll-space").style.height = totalH + "px";
+
+        buildWrappedLines(canvas.width);
+        render();
+      }
+
+      window.addEventListener("resize",  resize, { passive: true });
+      window.addEventListener("scroll",  scheduleRender, { passive: true });
+
+      fetch(FONT_PATH)
+        .then(r => r.json())
+        .then(f => {
+          font = f;
+          init();
+        });
+    </script>
+  </body>
+</html>
