@@ -1,0 +1,643 @@
+<!doctype html>
+<html lang="nl">
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body {
+        width: 100%; height: 100%;
+        overflow: hidden;
+        background: #fff;
+        font-family: monospace;
+      }
+      canvas {
+        display: block;
+        position: fixed;
+        inset: 0;
+      }
+
+      /* ── Panel ──────────────────────────────────────────────────────── */
+      #panel {
+        position: fixed;
+        right: 0; top: 0; bottom: 0;
+        width: 226px;
+        background: #fff;
+        color: #111;
+        font-family: monospace;
+        font-size: 11px;
+        display: flex;
+        flex-direction: column;
+        z-index: 10;
+        border-left: 1px solid #111;
+        overflow-y: auto;
+      }
+      .sec {
+        padding: 11px 12px 10px;
+        border-bottom: 1px solid #ddd;
+      }
+      .sec-title {
+        font-size: 8px;
+        letter-spacing: 0.15em;
+        color: #999;
+        margin-bottom: 9px;
+        text-transform: uppercase;
+      }
+      .sl-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 6px;
+      }
+      .sl-row:last-child { margin-bottom: 0; }
+      .sl-label {
+        width: 70px;
+        color: #666;
+        flex-shrink: 0;
+        font-size: 10px;
+      }
+      .sl-val {
+        width: 28px;
+        text-align: right;
+        color: #111;
+        flex-shrink: 0;
+        font-size: 10px;
+      }
+      input[type="range"] {
+        flex: 1;
+        -webkit-appearance: none;
+        appearance: none;
+        height: 2px;
+        background: #111;
+        border-radius: 0;
+        outline: none;
+        cursor: pointer;
+      }
+      input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        width: 11px; height: 11px;
+        border-radius: 50%;
+        background: #111;
+        cursor: pointer;
+      }
+      input[type="range"]::-moz-range-thumb {
+        width: 11px; height: 11px;
+        border-radius: 50%;
+        background: #111; border: none;
+        cursor: pointer;
+      }
+
+      /* Knoppen — zelfde stijl als studio */
+      .toggle-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 6px;
+      }
+      .toggle-row:last-child { margin-bottom: 0; }
+      .toggle-lbl { color: #666; font-size: 10px; }
+      .toggle-btn {
+        background: #fff; color: #111;
+        border: 1px solid #111;
+        padding: 3px 8px; border-radius: 2px;
+        font-family: monospace; font-size: 10px;
+        cursor: pointer; white-space: nowrap;
+        transition: box-shadow .08s, transform .08s;
+      }
+      .toggle-btn:hover { background: #f5f5f5; }
+      .toggle-btn.on {
+        box-shadow: 2px 2px 0 #111;
+        transform: translate(-1px, -1px);
+      }
+
+      /* Zone pills */
+      .zone-strip {
+        display: flex;
+        gap: 3px;
+        margin-top: 6px;
+      }
+      .zone-pill {
+        flex: 1; text-align: center;
+        padding: 4px 0;
+        border-radius: 2px;
+        font-size: 10px;
+        background: #fff;
+        border: 1px solid #ddd;
+        cursor: pointer;
+        transition: box-shadow .08s, transform .08s;
+        color: #999;
+      }
+      .zone-pill:hover { background: #f5f5f5; }
+      .zone-pill.active {
+        border-color: #111; color: #111;
+        box-shadow: 2px 2px 0 #111;
+        transform: translate(-1px, -1px);
+      }
+
+      /* Kleur knoppen */
+      .color-row { display: flex; gap: 4px; }
+      .color-btn {
+        flex: 1; padding: 4px 0;
+        border-radius: 2px;
+        border: 1px solid #ddd;
+        font-family: monospace; font-size: 10px;
+        cursor: pointer;
+        background: #fff; color: #999;
+        transition: box-shadow .08s, transform .08s;
+      }
+      .color-btn:hover { background: #f5f5f5; }
+      .color-btn.active {
+        border-color: #111; color: #111;
+        box-shadow: 2px 2px 0 #111;
+        transform: translate(-1px, -1px);
+      }
+
+      .txt-inp {
+        background: #fff;
+        border: 1px solid #111;
+        border-radius: 2px;
+        color: #111;
+        font-family: monospace;
+        font-size: 14px;
+        padding: 4px 7px;
+        width: 100%;
+        outline: none;
+        letter-spacing: 0.1em;
+      }
+      .txt-inp:focus {
+        box-shadow: 2px 2px 0 #111;
+      }
+
+      #statusbar {
+        margin-top: auto;
+        padding: 9px 12px;
+        border-top: 1px solid #ddd;
+        color: #bbb;
+        line-height: 1.9;
+        font-size: 9px;
+      }
+      #statusbar span { color: #666; }
+    </style>
+  </head>
+  <body>
+    <canvas id="c"></canvas>
+
+    <div id="panel">
+      <!-- Chladni modus -->
+      <div class="sec">
+        <div class="sec-title">CHLADNI MODUS M × N</div>
+        <div class="sl-row">
+          <span class="sl-label">M (horiz.)</span>
+          <input type="range" id="sl-m" min="1" max="10" step="0.01" value="3" />
+          <span class="sl-val" id="v-m">3.0</span>
+        </div>
+        <div class="sl-row">
+          <span class="sl-label">N (vert.)</span>
+          <input type="range" id="sl-n" min="1" max="10" step="0.01" value="2" />
+          <span class="sl-val" id="v-n">2.0</span>
+        </div>
+      </div>
+
+      <!-- Animatie -->
+      <div class="sec">
+        <div class="sec-title">ANIMATIE</div>
+        <div class="toggle-row">
+          <span class="toggle-lbl">Automatisch sweep</span>
+          <button class="toggle-btn on" id="btn-auto">AAN</button>
+        </div>
+        <div class="sl-row">
+          <span class="sl-label">Sweep tempo</span>
+          <input type="range" id="sl-sweep" min="0.0002" max="0.008" step="0.0001" value="0.001" />
+          <span class="sl-val" id="v-sweep">×1</span>
+        </div>
+        <div class="sl-row">
+          <span class="sl-label">Vibratie</span>
+          <input type="range" id="sl-vib" min="0" max="0.15" step="0.002" value="0.04" />
+          <span class="sl-val" id="v-vib">0.04</span>
+        </div>
+      </div>
+
+      <!-- Schaal -->
+      <div class="sec">
+        <div class="sec-title">SCHAAL</div>
+        <div class="sl-row">
+          <span class="sl-label">Grootte</span>
+          <input type="range" id="sl-size" min="0.1" max="1.6" step="0.01" value="0.5" />
+          <span class="sl-val" id="v-size">0.5</span>
+        </div>
+        <div class="sl-row">
+          <span class="sl-label">Dichtheid</span>
+          <input type="range" id="sl-dens" min="0.05" max="1.2" step="0.01" value="0.3" />
+          <span class="sl-val" id="v-dens">0.3</span>
+        </div>
+        <div class="sl-row">
+          <span class="sl-label">Vervorming</span>
+          <input type="range" id="sl-drift" min="0" max="120" step="1" value="30" />
+          <span class="sl-val" id="v-drift">30</span>
+        </div>
+      </div>
+
+      <!-- Zone → Vorm mapping -->
+      <div class="sec">
+        <div class="sec-title">ZONE → VORM</div>
+        <div style="display: flex; justify-content: space-between; color: #444; font-size: 8px; margin-bottom: 4px">
+          <span>knooppunt</span><span>antiknoop</span>
+        </div>
+        <div class="zone-strip" id="zone-strip">
+          <!-- gevuld door JS -->
+        </div>
+        <div style="color: #444; font-size: 8px; margin-top: 6px">Klik een zone aan om de vorm te wisselen.</div>
+      </div>
+
+      <!-- Kleurschema -->
+      <div class="sec">
+        <div class="sec-title">KLEUR</div>
+        <div class="color-row">
+          <button class="color-btn active" data-bg="#ffffff" data-fg="#111111">Wit</button>
+          <button class="color-btn" data-bg="#111111" data-fg="#eeeeee">Zwart</button>
+          <button class="color-btn" data-bg="#f5f0e8" data-fg="#111111">Beige</button>
+        </div>
+      </div>
+
+      <!-- Tekst -->
+      <div class="sec">
+        <div class="sec-title">TEKST</div>
+        <input class="txt-inp" id="txt-in" value="nee" maxlength="8" spellcheck="false" />
+      </div>
+
+      <div id="statusbar">
+        M = <span id="st-m">3.00</span> N = <span id="st-n">2.00</span><br />
+        vormen&nbsp;<span id="st-count">0</span>
+      </div>
+    </div>
+
+    <script>
+      // ── Config ────────────────────────────────────────────────────────────────────
+      const FONT_PATH = "../fonts/nee.json";
+      const Y_MAX = 16,
+        Y_MIN = -3;
+      const PANEL_W = 226;
+
+      // PCB-vormtypes
+      const ALL_SHAPES = ["via", "pad", "smd", "tracepad", "trace"];
+
+      // Zone → vorm mapping: 5 zones van node naar antinode
+      let zoneShapes = ["smd", "tracepad", "pad", "via", "trace"];
+
+      let bgColor = "#ffffff";
+      let fgColor = "#111111";
+
+      // Staat
+      let font = null,
+        text = "nee";
+      let m = 3,
+        n = 2;
+      let autoSweep = true;
+      let sweepSpeed = 0.001;
+      let vibAmp = 0.04;
+      let baseSize = 0.5;
+      let density = 0.3;
+      let driftAmp = 30; // px — Chladni-vervorming van lettervorm
+      let t = 0;
+      let shapes = [];
+
+      const canvas = document.getElementById("c");
+      const ctx = canvas.getContext("2d");
+
+      // ── Font helpers ──────────────────────────────────────────────────────────────
+      const gPts = (f, l) => {
+        const g = f.glyphs[l];
+        return !g ? [] : Array.isArray(g) ? g : (g.points ?? []);
+      };
+      const gLsb = (f, l) => {
+        const g = f.glyphs[l];
+        return !g ? 0 : (f.lsb?.[l] ?? (Array.isArray(g) ? 0 : (g.lsb ?? 0)));
+      };
+      const gRsb = (f, l) => {
+        const g = f.glyphs[l];
+        return !g ? 2 : (f.rsb?.[l] ?? (Array.isArray(g) ? 2 : (g.rsb ?? 2)));
+      };
+      function gAdv(f, l) {
+        const p = gPts(f, l);
+        return gLsb(f, l) + (p.length ? Math.max(...p.map((q) => q[0])) : 0) + gRsb(f, l);
+      }
+      function totW(f, t) {
+        return t
+          .split("")
+          .filter((l) => f.glyphs[l])
+          .reduce((s, l) => s + gAdv(f, l), 0);
+      }
+
+      function samplePath(pts, sp) {
+        if (!pts || pts.length < 2) return pts ? [...pts] : [];
+        const out = [];
+        for (let i = 0; i < pts.length - 1; i++) {
+          const [x0, y0] = pts[i],
+            [x1, y1] = pts[i + 1];
+          const n_ = Math.max(1, Math.floor(Math.hypot(x1 - x0, y1 - y0) / sp));
+          for (let s = 0; s < n_; s++) out.push([x0 + ((x1 - x0) * s) / n_, y0 + ((y1 - y0) * s) / n_]);
+        }
+        out.push([...pts[pts.length - 1]]);
+        return out;
+      }
+
+      // ── Chladni-veld ──────────────────────────────────────────────────────────────
+      function chladni(nx, ny) {
+        return (
+          Math.sin(m * Math.PI * nx) * Math.cos(n * Math.PI * ny) -
+          Math.cos(m * Math.PI * nx) * Math.sin(n * Math.PI * ny)
+        );
+      }
+
+      function chladniNorm(nx, ny) {
+        return Math.abs(chladni(nx, ny)) / Math.SQRT2;
+      }
+
+      // Gradiënt ∇z: geeft richting van steilste stijging (naar antiknoop)
+      // Negatief = richting dichtstbijzijnde knooplijn (zoals zand in experiment)
+      function chladniGrad(nx, ny) {
+        const gx =
+          m * Math.PI * (
+            Math.cos(m * Math.PI * nx) * Math.cos(n * Math.PI * ny) +
+            Math.sin(m * Math.PI * nx) * Math.sin(n * Math.PI * ny)
+          );
+        const gy =
+          n * Math.PI * (
+            -Math.sin(m * Math.PI * nx) * Math.sin(n * Math.PI * ny) -
+             Math.cos(m * Math.PI * nx) * Math.cos(n * Math.PI * ny)
+          );
+        return [gx, gy];
+      }
+
+      // ── Shapes bouwen ─────────────────────────────────────────────────────────────
+      function buildShapes() {
+        if (!font) return;
+        shapes = [];
+        const avW = canvas.width - PANEL_W;
+        const avH = canvas.height;
+        const tw = totW(font, text),
+          fh = Y_MAX - Y_MIN;
+        const S = Math.min((avW * 0.82) / tw, (avH * 0.7) / fh);
+        const ox = (avW - tw * S) / 2;
+        const by = (avH - fh * S) / 2 + Y_MAX * S;
+
+        const letters = text.split("").filter((l) => font.glyphs[l]);
+        let cx = ox;
+        for (const l of letters) {
+          const pts = gPts(font, l),
+            lsb = gLsb(font, l);
+          const samples = samplePath(pts, density);
+          for (const [fx, fy] of samples) {
+            const px = cx + lsb * S + fx * S;
+            const py = by - fy * S;
+            shapes.push({ cx: px, cy: py, nx: px / avW, ny: py / avH });
+          }
+          cx += gAdv(font, l) * S;
+        }
+        document.getElementById("st-count").textContent = shapes.length;
+      }
+
+      // ── PCB shape tekenen ─────────────────────────────────────────────────────────
+      function drawShape(oc, cx, cy, type, r, rotation, scaleX, scaleY, corner, thick) {
+        oc.save();
+        oc.translate(cx, cy);
+        oc.rotate(rotation);
+        oc.scale(scaleX, scaleY);
+        oc.beginPath();
+        switch (type) {
+
+          case "via": {
+            oc.arc(0, 0, r, 0, Math.PI * 2);
+            const iR = r * (0.32 + corner * 0.28);
+            oc.moveTo(iR, 0);
+            oc.arc(0, 0, iR, 0, Math.PI * 2);
+            break;
+          }
+
+          case "pad": {
+            const pw = r * (1.0 + thick * 0.8);
+            const ph = r * 0.52;
+            if (oc.roundRect) oc.roundRect(-pw, -ph, pw * 2, ph * 2, ph);
+            else oc.rect(-pw, -ph, pw * 2, ph * 2);
+            break;
+          }
+
+          case "smd": {
+            const s = r * 0.85;
+            oc.rect(-s, -s, s * 2, s * 2);
+            break;
+          }
+
+          case "tracepad": {
+            const pR   = r * 0.40;
+            const dist = r * 0.82;
+            const trH  = r * thick * 0.28;
+            oc.arc(-dist, 0, pR, 0, Math.PI * 2);
+            oc.moveTo(dist + pR, 0);
+            oc.arc(dist, 0, pR, 0, Math.PI * 2);
+            const tx = -dist + pR * 0.72;
+            oc.moveTo(tx, -trH); oc.lineTo(-tx, -trH);
+            oc.lineTo(-tx,  trH); oc.lineTo(tx,   trH);
+            oc.closePath();
+            break;
+          }
+
+          case "trace": {
+            const th = r * (0.10 + thick * 0.10);
+            oc.rect(-r, -th, r * 2, th * 2);
+            break;
+          }
+        }
+        oc.restore();
+      }
+
+      // ── Hoofdrender ───────────────────────────────────────────────────────────────
+      function draw() {
+        const W = canvas.width,
+          H = canvas.height;
+        ctx.fillStyle = bgColor;
+        ctx.fillRect(0, 0, W, H);
+
+        const off = document.createElement("canvas");
+        off.width = W;
+        off.height = H;
+        const oc = off.getContext("2d");
+        oc.globalCompositeOperation = "xor";
+
+        const avW = W - PANEL_W;
+        const baseR = Math.max((avW / (totW(font || { glyphs: {} }, text) || 1)) * baseSize * 0.6, 2);
+
+        for (const sh of shapes) {
+          const z = chladniNorm(sh.nx, sh.ny);
+          const vib = chladni(sh.nx, sh.ny) * Math.sin(t);
+
+          const zoneIdx = Math.min(Math.floor(z * 5), 4);
+          const type = zoneShapes[zoneIdx];
+
+          const r = baseR * (0.6 + z * 0.6 + Math.abs(vib) * vibAmp * 3);
+          const corner = z;
+          const thick = 0.25 + (1 - z) * 0.35;
+
+          // Chladni-gradiëntverplaatsing: punten bewegen richting knooplijn
+          const [gx, gy] = chladniGrad(sh.nx, sh.ny);
+          const gLen = Math.hypot(gx, gy) || 1;
+          const disp = z * driftAmp * Math.sin(t);
+          const px = sh.cx - (gx / gLen) * disp;
+          const py = sh.cy - (gy / gLen) * disp;
+
+          drawShape(oc, px, py, type, r, 0, 1, 1, corner, thick);
+          oc.strokeStyle = fgColor + "dd";
+          oc.lineWidth = type === "trace" ? 0.8 : 1.4;
+          oc.stroke();
+        }
+        ctx.drawImage(off, 0, 0);
+      }
+
+      // ── Loop ──────────────────────────────────────────────────────────────────────
+      let lastStatUpdate = 0;
+      function loop(ts) {
+        requestAnimationFrame(loop);
+
+        if (autoSweep) {
+          m = 1.5 + 4.5 * (0.5 + 0.5 * Math.sin(ts * sweepSpeed));
+          n = 1.5 + 4.5 * (0.5 + 0.5 * Math.cos(ts * sweepSpeed * 0.71));
+          document.getElementById("sl-m").value = m;
+          document.getElementById("sl-n").value = n;
+        }
+
+        t = ts * 0.003;
+
+        draw();
+
+        if (ts - lastStatUpdate > 200) {
+          document.getElementById("st-m").textContent = m.toFixed(2);
+          document.getElementById("st-n").textContent = n.toFixed(2);
+          document.getElementById("v-m").textContent = m.toFixed(1);
+          document.getElementById("v-n").textContent = n.toFixed(1);
+          lastStatUpdate = ts;
+        }
+      }
+
+      // ── Resize ────────────────────────────────────────────────────────────────────
+      window.addEventListener("resize", () => {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        buildShapes();
+      });
+
+      // ── Zone-strip UI ─────────────────────────────────────────────────────────────
+      const SHAPE_SYMBOLS = { via: "◎", pad: "▬", smd: "□", tracepad: "⊟", trace: "—" };
+      let editingZone = -1;
+
+      function buildZoneStrip() {
+        const strip = document.getElementById("zone-strip");
+        strip.innerHTML = "";
+        zoneShapes.forEach((type, i) => {
+          const pill = document.createElement("div");
+          pill.className = "zone-pill" + (i === editingZone ? " active" : "");
+          pill.title = ["knooppunt", "", "", "", "antiknoop"][i];
+          pill.textContent = SHAPE_SYMBOLS[type];
+          pill.addEventListener("click", () => {
+            editingZone = editingZone === i ? -1 : i;
+            buildZoneStrip();
+          });
+          strip.appendChild(pill);
+        });
+
+        let picker = document.getElementById("zone-picker");
+        if (editingZone >= 0) {
+          if (!picker) {
+            picker = document.createElement("div");
+            picker.id = "zone-picker";
+            picker.style.cssText = "display:flex;gap:3px;margin-top:5px;";
+            document.getElementById("zone-strip").parentNode.appendChild(picker);
+          }
+          picker.innerHTML = "";
+          ALL_SHAPES.forEach((s) => {
+            const btn = document.createElement("div");
+            btn.className = "zone-pill" + (zoneShapes[editingZone] === s ? " active" : "");
+            btn.textContent = SHAPE_SYMBOLS[s];
+            btn.addEventListener("click", () => {
+              zoneShapes[editingZone] = s;
+              buildZoneStrip();
+            });
+            picker.appendChild(btn);
+          });
+        } else if (picker) {
+          picker.remove();
+        }
+      }
+
+      // ── UI bindings ───────────────────────────────────────────────────────────────
+      document.getElementById("sl-m").addEventListener("input", function () {
+        m = parseFloat(this.value);
+        document.getElementById("v-m").textContent = m.toFixed(1);
+      });
+      document.getElementById("sl-n").addEventListener("input", function () {
+        n = parseFloat(this.value);
+        document.getElementById("v-n").textContent = n.toFixed(1);
+      });
+
+      const btnAuto = document.getElementById("btn-auto");
+      btnAuto.addEventListener("click", () => {
+        autoSweep = !autoSweep;
+        btnAuto.textContent = autoSweep ? "AAN" : "UIT";
+        btnAuto.classList.toggle("on", autoSweep);
+        ["sl-m", "sl-n"].forEach((id) => (document.getElementById(id).disabled = autoSweep));
+      });
+      ["sl-m", "sl-n"].forEach((id) => (document.getElementById(id).disabled = true));
+
+      document.getElementById("sl-sweep").addEventListener("input", function () {
+        sweepSpeed = parseFloat(this.value);
+        const mult = Math.round(sweepSpeed / 0.001);
+        document.getElementById("v-sweep").textContent = "×" + (mult || "<1");
+      });
+      document.getElementById("sl-vib").addEventListener("input", function () {
+        vibAmp = parseFloat(this.value);
+        document.getElementById("v-vib").textContent = vibAmp.toFixed(2);
+      });
+      document.getElementById("sl-size").addEventListener("input", function () {
+        baseSize = parseFloat(this.value);
+        document.getElementById("v-size").textContent = baseSize.toFixed(1);
+      });
+      document.getElementById("sl-dens").addEventListener("input", function () {
+        density = parseFloat(this.value);
+        document.getElementById("v-dens").textContent = density.toFixed(2);
+        buildShapes();
+      });
+      document.getElementById("sl-drift").addEventListener("input", function () {
+        driftAmp = parseFloat(this.value);
+        document.getElementById("v-drift").textContent = driftAmp.toFixed(0);
+      });
+
+      document.querySelectorAll(".color-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          bgColor = btn.dataset.bg;
+          fgColor = btn.dataset.fg;
+          document.body.style.background = bgColor;
+          canvas.style.background = bgColor;
+          document.querySelectorAll(".color-btn").forEach((b) => b.classList.remove("active"));
+          btn.classList.add("active");
+        });
+      });
+
+      document.getElementById("txt-in").addEventListener("input", function () {
+        text = this.value || " ";
+        buildShapes();
+      });
+
+      // ── Init ──────────────────────────────────────────────────────────────────────
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+
+      buildZoneStrip();
+
+      fetch(FONT_PATH)
+        .then((r) => r.json())
+        .then((f) => {
+          font = f;
+          buildShapes();
+          requestAnimationFrame(loop);
+        });
+    </script>
+  </body>
+</html>

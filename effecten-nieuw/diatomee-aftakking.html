@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="nl">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Diatomee aftakking</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; background: #fff; overflow: hidden; }
+      canvas { position: fixed; inset: 0; width: 100%; height: 100%; }
+
+      #ui {
+        position: fixed;
+        bottom: 24px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 10;
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        background: rgba(255,255,255,0.92);
+        border: 1px solid #ccc;
+        border-radius: 3px;
+        padding: 10px 16px;
+        font-family: monospace;
+        font-size: 10px;
+        color: #666;
+        white-space: nowrap;
+      }
+      #ui label { display: flex; align-items: center; gap: 6px; }
+      #ui input[type="text"] {
+        background: #fff; border: 1px solid #aaa; color: #222;
+        font-family: monospace; font-size: 13px;
+        padding: 3px 7px; width: 80px; outline: none; letter-spacing: 0.1em;
+      }
+      #ui input[type="text"]:focus { border-color: #555; }
+      #ui input[type="range"] {
+        -webkit-appearance: none; width: 80px; height: 2px;
+        background: #bbb; outline: none; cursor: pointer;
+      }
+      #ui input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none; width: 10px; height: 10px;
+        border-radius: 50%; background: #555; cursor: pointer;
+      }
+      #ui button {
+        background: #fff; border: 1px solid #aaa; color: #444;
+        font-family: monospace; font-size: 10px;
+        padding: 4px 10px; cursor: pointer; letter-spacing: 0.05em;
+      }
+      #ui button:hover { border-color: #555; color: #000; }
+    </style>
+  </head>
+  <body>
+    <canvas id="c"></canvas>
+    <div id="ui">
+      <label>tekst <input type="text" id="txt" value="nee" maxlength="7" spellcheck="false" /></label>
+      <label>stengels <input type="range" id="sl-numstems" min="1" max="8" value="3" /></label>
+      <label>stengellengte <input type="range" id="sl-stem" min="15" max="100" value="45" /></label>
+      <label>spreiding <input type="range" id="sl-spread" min="20" max="100" value="50" /></label>
+      <button id="btn-restart">↺ opnieuw</button>
+    </div>
+
+    <script>
+      const FONT_PATH = "../fonts/nee.json";
+      const Y_MAX = 16, Y_MIN = -3, FONT_H = Y_MAX - Y_MIN;
+
+      let font = null;
+      let colonies = [];
+      let letterPaths = [];
+      let frameId = null;
+
+      const canvas = document.getElementById("c");
+      const ctx = canvas.getContext("2d");
+
+      // ── Font helpers ──────────────────────────────────────────────────────────
+      function gPts(l) { const g = font.glyphs[l]; return !g ? [] : Array.isArray(g) ? g : (g.points ?? []); }
+      function gLsb(l) { const g = font.glyphs[l]; return !g ? 0 : (font.lsb?.[l] ?? (Array.isArray(g) ? 0 : (g.lsb ?? 0))); }
+      function gAdv(l) {
+        const g = font.glyphs[l]; if (!g) return 0;
+        const pts = gPts(l); const rsb = font.rsb?.[l] ?? (Array.isArray(g) ? 2 : (g.rsb ?? 2));
+        return gLsb(l) + (pts.length ? Math.max(...pts.map(p => p[0])) : 0) + rsb;
+      }
+
+      function seededRand(seed) {
+        let s = seed;
+        return () => { s = (s * 1664525 + 1013904223) & 0xffffffff; return (s >>> 0) / 0xffffffff; };
+      }
+
+      // ── Bouw één stengel + bloei ──────────────────────────────────────────────
+      // Cellen raken elkaar precies: stapgrootte = 2 * ry
+      function buildStem(px, py, stemAngle, stemLen, spread, rand) {
+        const CELL_R = 2.2;
+
+        // Stengel: langwerpige ovalen aaneengesloten
+        const STEM_RY   = 4.5 + rand() * 3.5;   // halve hoogte cel (langs as)
+        const STEM_RX   = STEM_RY * (0.22 + rand() * 0.16); // halve breedte cel
+        const numCells  = Math.max(2, Math.floor(stemLen / (STEM_RY * 2)));
+        const kink      = (rand() - 0.5) * 0.45;
+        const kSpeed    = 0.8 + rand() * 1.2;
+
+        const cells = [];
+        let curX = px, curY = py;
+
+        for (let i = 0; i < numCells; i++) {
+          const frac  = i / Math.max(numCells - 1, 1);
+          const angle = stemAngle + kink * Math.sin(frac * Math.PI * kSpeed);
+
+          // Middelpunt cel op exact ry afstand → cellen raken elkaar
+          const cx = curX + Math.cos(angle) * STEM_RY;
+          const cy = curY + Math.sin(angle) * STEM_RY;
+
+          cells.push({ cx, cy, rx: STEM_RY, ry: STEM_RX, rot: angle });
+
+          // Volgende cel begint aan het uiteinde van deze
+          curX += Math.cos(angle) * STEM_RY * 2;
+          curY += Math.sin(angle) * STEM_RY * 2;
+        }
+
+        const bloomX     = curX;
+        const bloomY     = curY;
+        const bloomAngle = stemAngle + kink;
+
+        // Bloei: waaier van kleine diatomee-cirkeltjes
+        const bloomCone  = Math.PI * (0.45 + rand() * 0.5);
+        const NUM_ARMS   = Math.round(5 + rand() * 7);
+        const ARM_LEN    = spread * (0.5 + rand() * 0.8);
+        const bloomCircles = [];
+
+        for (let a = 0; a < NUM_ARMS; a++) {
+          const t        = NUM_ARMS > 1 ? a / (NUM_ARMS - 1) : 0.5;
+          const armAngle = bloomAngle + (t - 0.5) * bloomCone;
+          const bell     = Math.sin(t * Math.PI);
+          const thisLen  = ARM_LEN * (0.3 + bell * 0.7) * (0.6 + rand() * 0.4);
+          const armKink  = (rand() - 0.5) * 0.55;
+          const armKSpd  = 0.5 + rand() * 1.5;
+          const nCells   = Math.floor(thisLen / (CELL_R * 2.1));
+
+          for (let i = 0; i < nCells; i++) {
+            const frac     = i / Math.max(nCells - 1, 1);
+            const curAngle = armAngle + armKink * Math.sin(frac * Math.PI * armKSpd);
+            const dist     = CELL_R + i * CELL_R * 2.1;
+            bloomCircles.push({
+              cx:  bloomX + Math.cos(curAngle) * dist,
+              cy:  bloomY + Math.sin(curAngle) * dist,
+              rx:  CELL_R * (0.85 + rand() * 0.3),
+              ry:  CELL_R * (0.48 + rand() * 0.28) * (0.85 + rand() * 0.3),
+              rot: curAngle,
+              dist,
+            });
+          }
+        }
+
+        bloomCircles.sort((a, b) => a.dist - b.dist);
+        return { cells, bloomX, bloomY, bloomCircles, stemRevealed: 0, bloomRevealed: 0 };
+      }
+
+      // ── Bouw één kolonie: N stengels vanuit één ankerpunt ─────────────────────
+      function buildColony(px, py, baseAngle, cone, seed) {
+        const rand     = seededRand(seed);
+        const stemLen  = +document.getElementById("sl-stem").value;
+        const spread   = +document.getElementById("sl-spread").value;
+        const numStems = +document.getElementById("sl-numstems").value;
+
+        const stems = [];
+        for (let s = 0; s < numStems; s++) {
+          const t         = numStems > 1 ? s / (numStems - 1) : 0.5;
+          const stemAngle = baseAngle + (t - 0.5) * cone;
+          // Kleine random offset per stengel voor organisch gevoel
+          const jitter    = (rand() - 0.5) * 0.25;
+          const thisLen   = stemLen * (0.65 + rand() * 0.7);
+          stems.push(buildStem(px, py, stemAngle + jitter, thisLen, spread, rand));
+        }
+
+        return { x: px, y: py, stems };
+      }
+
+      // ── Richtingsbepaling per punt ────────────────────────────────────────────
+      function colonyDir(px, py, centX, centY, sdx, sdy, rand) {
+        const strategy = Math.floor(rand() * 5);
+        const outAngle  = Math.atan2(py - centY, px - centX);
+        const tangAngle = Math.atan2(sdy, sdx) + (rand() > 0.5 ? 0 : Math.PI);
+        const rndAngle  = rand() * Math.PI * 2;
+        switch (strategy) {
+          case 0: return { angle: outAngle,  cone: Math.PI * 0.6  };
+          case 1: return { angle: outAngle,  cone: Math.PI * 0.25 };
+          case 2: return { angle: tangAngle, cone: Math.PI * 0.5  };
+          case 3: return { angle: rndAngle,  cone: Math.PI * 0.7  };
+          case 4: return { angle: 0,         cone: Math.PI * 2    };
+        }
+      }
+
+      // ── Bouw alle kolonies ────────────────────────────────────────────────────
+      function buildAll(word) {
+        const W = canvas.width, H = canvas.height;
+        const chars = word.split("").filter(c => font.glyphs[c]);
+        if (!chars.length) return;
+
+        const totalAdv = chars.reduce((s, c) => s + gAdv(c), 0);
+        const S = Math.min((W * 0.55) / totalAdv, (H * 0.40) / FONT_H);
+        const startX = (W - totalAdv * S) / 2;
+        const baseY  = H / 2 + (Y_MAX - FONT_H / 2) * S;
+
+        colonies = [];
+        letterPaths = [];
+
+        let cx = startX;
+        let seedCounter = 1;
+
+        for (const ch of chars) {
+          const pts = gPts(ch); const lsb = gLsb(ch);
+          if (!pts.length) { cx += gAdv(ch) * S; continue; }
+
+          const sPts = pts.map(([fx, fy]) => ({
+            x: cx + (lsb + fx) * S,
+            y: baseY - fy * S,
+          }));
+
+          letterPaths.push({ pts: sPts });
+
+          const centX = sPts.reduce((s, p) => s + p.x, 0) / sPts.length;
+          const centY = sPts.reduce((s, p) => s + p.y, 0) / sPts.length;
+
+          for (let i = 0; i < sPts.length; i++) {
+            const p0 = sPts[i];
+            const p1 = sPts[Math.min(i + 1, sPts.length - 1)];
+            const sdx = p1.x - p0.x, sdy = p1.y - p0.y;
+            const slen = Math.hypot(sdx, sdy) || 1;
+
+            const dirRand = seededRand(seedCounter * 7919);
+            const { angle, cone } = colonyDir(p0.x, p0.y, centX, centY, sdx / slen, sdy / slen, dirRand);
+            colonies.push(buildColony(p0.x, p0.y, angle, cone, seedCounter++));
+          }
+
+          cx += gAdv(ch) * S;
+        }
+      }
+
+      // ── Teken het letter-skelet ───────────────────────────────────────────────
+      function drawSkeleton() {
+        ctx.save();
+        ctx.strokeStyle = "rgba(0,0,0,0.55)";
+        ctx.lineWidth = 1.8;
+        ctx.lineJoin = "round"; ctx.lineCap = "round";
+        for (const { pts } of letterPaths) {
+          ctx.beginPath();
+          ctx.moveTo(pts[0].x, pts[0].y);
+          for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      // ── Teken een ovaal ───────────────────────────────────────────────────────
+      function drawOval(cx, cy, rx, ry, rot, lw) {
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(rot);
+        ctx.beginPath();
+        ctx.ellipse(0, 0, Math.max(rx, 0.5), Math.max(ry, 0.5), 0, 0, Math.PI * 2);
+        ctx.strokeStyle = "#1a1a1a";
+        ctx.lineWidth = lw;
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // ── Teken ankerknoopje ────────────────────────────────────────────────────
+      function drawNode(x, y) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+        ctx.strokeStyle = "#1a1a1a";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // ── Animatielus ───────────────────────────────────────────────────────────
+      const STEM_SPEED  = 1;
+      const BLOOM_SPEED = 2;
+
+      function animate() {
+        frameId = requestAnimationFrame(animate);
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        drawSkeleton();
+
+        let anyActive = false;
+
+        for (const col of colonies) {
+          drawNode(col.x, col.y);
+
+          for (const stem of col.stems) {
+            // ── Stengel groeit cel voor cel ──
+            if (stem.stemRevealed < stem.cells.length) {
+              stem.stemRevealed = Math.min(stem.cells.length, stem.stemRevealed + STEM_SPEED);
+              anyActive = true;
+            }
+            for (let i = 0; i < stem.stemRevealed; i++) {
+              const sc = stem.cells[i];
+              drawOval(sc.cx, sc.cy, sc.rx, sc.ry, sc.rot, 0.7);
+            }
+
+            // ── Bloei start zodra stengel af is ──
+            if (stem.stemRevealed >= stem.cells.length) {
+              if (stem.bloomRevealed < stem.bloomCircles.length) {
+                stem.bloomRevealed = Math.min(stem.bloomCircles.length, stem.bloomRevealed + BLOOM_SPEED);
+                anyActive = true;
+              }
+              for (let i = 0; i < stem.bloomRevealed; i++) {
+                const bc = stem.bloomCircles[i];
+                drawOval(bc.cx, bc.cy, bc.rx, bc.ry, bc.rot, 0.45);
+              }
+              drawNode(stem.bloomX, stem.bloomY);
+            }
+          }
+        }
+
+        if (!anyActive) cancelAnimationFrame(frameId);
+      }
+
+      // ── Start / resize ────────────────────────────────────────────────────────
+      function restart() {
+        if (frameId) cancelAnimationFrame(frameId);
+
+        canvas.width  = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const word = document.getElementById("txt").value.trim() || "nee";
+        buildAll(word);
+        frameId = requestAnimationFrame(animate);
+      }
+
+      document.getElementById("btn-restart").addEventListener("click", restart);
+      document.getElementById("txt").addEventListener("keydown", e => { if (e.key === "Enter") restart(); });
+      window.addEventListener("resize", restart);
+
+      fetch(FONT_PATH).then(r => r.json()).then(f => { font = f; restart(); });
+    </script>
+  </body>
+</html>

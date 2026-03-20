@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #fff;
+      }
+      canvas {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="c"></canvas>
+    <script>
+      const TEXT = "nee";
+      const Y_MAX = 16,
+        Y_MIN = -3;
+      const SHAPES = ["circle", "square", "diamond", "triangle", "cross"];
+
+      // Drift config
+      const MAX_DRIFT = 4; // max verplaatsing in grid-eenheden
+      const SPEED = 0.0008; // hoe snel de oscillatie gaat (rad/frame)
+      const IMPULSE = 0.015; // grootte willekeurige stap op snelheid
+      const DAMPING = 0.97; // snelheidsdemping (lager = trager/gladder)
+
+      let spacing = 0.35;
+      let radiusMult = 0.4;
+      let shape = "circle";
+
+      const canvas = document.getElementById("c");
+      const ctx = canvas.getContext("2d");
+
+      let origFont = null; // onveranderd origineel
+      let mutFont = null; // huidige posities
+      let drifts = {}; // { letter: [[dx,dy], ...] } — drift per punt
+      let vels = {}; // { letter: [[vx,vy], ...] } — snelheid per punt
+      let tick = 0;
+
+      fetch("../fonts/nee.json")
+        .then((r) => r.json())
+        .then((f) => {
+          origFont = f;
+          mutFont = JSON.parse(JSON.stringify(f));
+          initDrifts();
+          resize();
+          function loop() {
+            mutate();
+            draw();
+            requestAnimationFrame(loop);
+          }
+          requestAnimationFrame(loop);
+        });
+
+      window.addEventListener("resize", () => {
+        resize();
+        draw();
+      });
+
+      function resize() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+      }
+
+      function initDrifts() {
+        drifts = {};
+        vels = {};
+        for (const letter of TEXT.split("")) {
+          const g = origFont.glyphs[letter];
+          if (!g) continue;
+          const pts = Array.isArray(g) ? g : (g.points ?? []);
+          drifts[letter] = pts.map(() => [0, 0]);
+          vels[letter] = pts.map(() => [0, 0]);
+        }
+      }
+
+      // ── Toetsenbord ──────────────────────────────────────────────────────────────
+      window.addEventListener("keydown", (e) => {
+        if (e.key >= "1" && e.key <= "5") {
+          shape = SHAPES[+e.key - 1];
+          draw();
+        }
+        if (e.key === "+" || e.key === "=") {
+          radiusMult = Math.min(radiusMult + 0.05, 2);
+          draw();
+        }
+        if (e.key === "-") {
+          radiusMult = Math.max(radiusMult - 0.05, 0.05);
+          draw();
+        }
+        if (e.key === "[") {
+          spacing = Math.max(spacing - 0.05, 0.05);
+          draw();
+        }
+        if (e.key === "]") {
+          spacing = Math.min(spacing + 0.05, 2);
+          draw();
+        }
+      });
+
+      // ── Slijtage: gladde oscillerende drift via snelheidsvectoren ────────────────
+      function mutate() {
+        tick++;
+        // spring = 0: punten drijven vrij (onleesbaar)
+        // spring = 1: punten trekken terug naar origineel (leesbaar)
+        const spring = (Math.sin(tick * SPEED) + 1) / 2;
+
+        const letters = TEXT.split("").filter((l) => mutFont.glyphs[l]);
+        for (const letter of letters) {
+          const g = mutFont.glyphs[letter];
+          const pts = Array.isArray(g) ? g : (g.points ?? []);
+          const orig = origFont.glyphs[letter];
+          const oPts = Array.isArray(orig) ? orig : (orig.points ?? []);
+          const d = drifts[letter];
+          const v = vels[letter];
+
+          for (let i = 0; i < pts.length; i++) {
+            // Kleine willekeurige impuls op snelheid (niet op positie)
+            v[i][0] += (Math.random() - 0.5) * IMPULSE;
+            v[i][1] += (Math.random() - 0.5) * IMPULSE;
+
+            // Snelheidsdemping → beweging loopt glad uit
+            v[i][0] *= DAMPING;
+            v[i][1] *= DAMPING;
+
+            // Veerterugtrekking op drift: sterk wanneer spring hoog
+            d[i][0] += v[i][0];
+            d[i][1] += v[i][1];
+            d[i][0] *= 1 - spring * 0.04;
+            d[i][1] *= 1 - spring * 0.04;
+
+            // Maximale drift begrenzen
+            const mag = Math.hypot(d[i][0], d[i][1]);
+            if (mag > MAX_DRIFT) {
+              d[i][0] *= MAX_DRIFT / mag;
+              d[i][1] *= MAX_DRIFT / mag;
+            }
+
+            // Pas toe op positie
+            pts[i][0] = oPts[i][0] + d[i][0];
+            pts[i][1] = oPts[i][1] + d[i][1];
+          }
+        }
+      }
+
+      // ── Shape drawing ────────────────────────────────────────────────────────────
+      function shapePath(ctx, cx, cy, r, type) {
+        ctx.beginPath();
+        switch (type) {
+          case "circle":
+            ctx.arc(cx, cy, r, 0, Math.PI * 2);
+            break;
+          case "square":
+            ctx.rect(cx - r * 0.88, cy - r * 0.88, r * 1.76, r * 1.76);
+            break;
+          case "diamond":
+            ctx.moveTo(cx, cy - r * 1.25);
+            ctx.lineTo(cx + r, cy);
+            ctx.lineTo(cx, cy + r * 1.25);
+            ctx.lineTo(cx - r, cy);
+            ctx.closePath();
+            break;
+          case "triangle": {
+            const h = r * 1.15;
+            ctx.moveTo(cx, cy - h);
+            ctx.lineTo(cx + r * 1.1, cy + h * 0.55);
+            ctx.lineTo(cx - r * 1.1, cy + h * 0.55);
+            ctx.closePath();
+            break;
+          }
+          case "cross": {
+            const t = r * 0.38;
+            ctx.moveTo(cx - t, cy - r);
+            ctx.lineTo(cx + t, cy - r);
+            ctx.lineTo(cx + t, cy - t);
+            ctx.lineTo(cx + r, cy - t);
+            ctx.lineTo(cx + r, cy + t);
+            ctx.lineTo(cx + t, cy + t);
+            ctx.lineTo(cx + t, cy + r);
+            ctx.lineTo(cx - t, cy + r);
+            ctx.lineTo(cx - t, cy + t);
+            ctx.lineTo(cx - r, cy + t);
+            ctx.lineTo(cx - r, cy - t);
+            ctx.lineTo(cx - t, cy - t);
+            ctx.closePath();
+            break;
+          }
+        }
+      }
+
+      // ── Outline rendering ────────────────────────────────────────────────────────
+      function sampleStroke(pts, sp) {
+        if (!pts || pts.length === 0) return [];
+        const out = [];
+        for (let i = 0; i < pts.length - 1; i++) {
+          const [x0, y0] = pts[i],
+            [x1, y1] = pts[i + 1];
+          const dx = x1 - x0,
+            dy = y1 - y0;
+          const steps = Math.max(1, Math.floor(Math.hypot(dx, dy) / sp));
+          for (let s = 0; s < steps; s++) out.push([x0 + dx * (s / steps), y0 + dy * (s / steps)]);
+        }
+        out.push([...pts[pts.length - 1]]);
+        return out;
+      }
+
+      function advance(l, f) {
+        const g = f.glyphs[l];
+        if (!g) return 0;
+        const pts = Array.isArray(g) ? g : (g.points ?? []);
+        const lsb = f.lsb?.[l] ?? g.lsb ?? 0;
+        const rsb = f.rsb?.[l] ?? g.rsb ?? 2;
+        const maxX = pts.length ? Math.max(...pts.map((p) => p[0])) : 0;
+        return lsb + maxX + rsb;
+      }
+
+      function draw() {
+        if (!mutFont) return;
+        const W = canvas.width,
+          H = canvas.height;
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, W, H);
+
+        // Gebruik originele font voor layout (zodat letters niet wegschieten)
+        const letters = TEXT.split("").filter((l) => origFont.glyphs[l]);
+        const totalWidth = letters.reduce((s, l) => s + advance(l, origFont), 0);
+        const fontHeight = Y_MAX - Y_MIN;
+
+        const S = Math.min((W - 80) / totalWidth, (H - 80) / fontHeight);
+        const r = Math.max(S * radiusMult, 2);
+
+        const offsetX = (W - totalWidth * S) / 2;
+        const baselineY = (H - fontHeight * S) / 2 + Y_MAX * S;
+
+        const off = document.createElement("canvas");
+        off.width = W;
+        off.height = H;
+        const octx = off.getContext("2d");
+        octx.globalCompositeOperation = "xor";
+
+        let curX = offsetX;
+        for (const letter of letters) {
+          const g = mutFont.glyphs[letter];
+          if (!g) continue;
+          const pts = Array.isArray(g) ? g : (g.points ?? []);
+          const lsb = origFont.lsb?.[letter] ?? origFont.glyphs[letter]?.lsb ?? 0;
+          const samples = sampleStroke(pts, spacing);
+          for (const [fx, fy] of samples) {
+            shapePath(octx, curX + lsb * S + fx * S, baselineY - fy * S, r, shape);
+            octx.strokeStyle = "rgba(17,17,17,0.88)";
+            octx.lineWidth = 1.5;
+            octx.stroke();
+          }
+          curX += advance(letter, origFont) * S;
+        }
+        ctx.drawImage(off, 0, 0);
+      }
+    </script>
+  </body>
+</html>

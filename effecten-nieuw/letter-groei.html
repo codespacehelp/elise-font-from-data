@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="nl">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Schimmelgroei — letter</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; background: #000; overflow: hidden; }
+
+      .layer {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+      }
+      #c-settled { z-index: 1; }
+      #c-tips    { z-index: 2; pointer-events: none; }
+
+      /* ── UI ─────────────────────────────────────────────────────────────── */
+      #ui {
+        position: fixed;
+        bottom: 24px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 10;
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        background: rgba(0,0,0,0.75);
+        border: 1px solid #2a2a2a;
+        border-radius: 3px;
+        padding: 10px 16px;
+        font-family: monospace;
+        font-size: 10px;
+        color: #666;
+        white-space: nowrap;
+      }
+      #ui label { display: flex; align-items: center; gap: 6px; }
+      #ui input[type="text"] {
+        background: #000;
+        border: 1px solid #444;
+        color: #ccc;
+        font-family: monospace;
+        font-size: 13px;
+        padding: 3px 7px;
+        width: 80px;
+        outline: none;
+        letter-spacing: 0.1em;
+      }
+      #ui input[type="text"]:focus { border-color: #888; }
+      #ui input[type="range"] {
+        -webkit-appearance: none;
+        width: 80px; height: 2px;
+        background: #444;
+        outline: none;
+        cursor: pointer;
+      }
+      #ui input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        width: 10px; height: 10px;
+        border-radius: 50%;
+        background: #888;
+        cursor: pointer;
+      }
+      #ui button {
+        background: #000;
+        border: 1px solid #444;
+        color: #aaa;
+        font-family: monospace;
+        font-size: 10px;
+        padding: 4px 10px;
+        cursor: pointer;
+        letter-spacing: 0.05em;
+      }
+      #ui button:hover { border-color: #888; color: #fff; }
+
+      /* fase-indicator */
+      #fase {
+        position: fixed;
+        top: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        font-family: monospace;
+        font-size: 9px;
+        letter-spacing: 0.18em;
+        color: #333;
+        z-index: 10;
+        text-transform: uppercase;
+        transition: color 0.6s;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Laag 1: permanente paden (nooit gewist) -->
+    <canvas id="c-settled" class="layer"></canvas>
+    <!-- Laag 2: bewegende tips (elk frame gewist) -->
+    <canvas id="c-tips"    class="layer"></canvas>
+
+    <div id="fase">groei fase 1</div>
+
+    <div id="ui">
+      <label>
+        tekst
+        <input type="text" id="txt" value="nee" maxlength="7" spellcheck="false" />
+      </label>
+      <label>
+        snelheid
+        <input type="range" id="sl-speed"  min="1" max="8" value="1" />
+      </label>
+      <label>
+        afwijking
+        <input type="range" id="sl-wobble" min="0" max="300" value="120" />
+      </label>
+      <button id="btn-restart">↺ opnieuw</button>
+    </div>
+
+    <script>
+      // ── Config ────────────────────────────────────────────────────────────────────
+      const FONT_PATH = "../fonts/nee.json";
+      const Y_MAX = 16, Y_MIN = -3, FONT_H = Y_MAX - Y_MIN;
+
+      // ── State ─────────────────────────────────────────────────────────────────────
+      let font        = null;
+      let hyphae      = [];   // [{path:[{x,y}…], drawn:n, srcNode:i, dstNode:j}]
+      let nodePts     = [];   // [{x,y, activated:bool}]
+      let animating   = false;
+      let frameId     = null;
+      let phase       = 1;    // 1 = primair, 2 = secundair detail
+
+      const settled = document.getElementById("c-settled");
+      const tips    = document.getElementById("c-tips");
+      const sCtx    = settled.getContext("2d");
+      const tCtx    = tips.getContext("2d");
+      const faseEl  = document.getElementById("fase");
+
+      // ── Noise: gelaagde sinusfuncties → vloeiende organische curve ────────────────
+      function noise(x, seed) {
+        return (Math.sin(x * 2.43  + seed * 1.71) * 0.50 +
+                Math.sin(x * 5.13  + seed * 3.23) * 0.30 +
+                Math.sin(x * 11.31 + seed * 7.43) * 0.20);
+      }
+
+      // ── Font helpers ──────────────────────────────────────────────────────────────
+      function gPts(l) {
+        const g = font.glyphs[l];
+        return !g ? [] : Array.isArray(g) ? g : (g.points ?? []);
+      }
+      function gLsb(l) {
+        const g = font.glyphs[l];
+        return !g ? 0 : (font.lsb?.[l] ?? (Array.isArray(g) ? 0 : (g.lsb ?? 0)));
+      }
+      function gAdv(l) {
+        const g = font.glyphs[l];
+        if (!g) return 0;
+        const pts = gPts(l);
+        const rsb = font.rsb?.[l] ?? (Array.isArray(g) ? 2 : (g.rsb ?? 2));
+        return gLsb(l) + (pts.length ? Math.max(...pts.map(p => p[0])) : 0) + rsb;
+      }
+
+      // ── Organisch pad tussen twee punten ──────────────────────────────────────────
+      function organicPath(p0, p1, wobble, seed) {
+        const dx = p1.x - p0.x, dy = p1.y - p0.y;
+        const len = Math.hypot(dx, dy);
+        if (len < 0.5) return [p0, p1];
+
+        const steps = Math.max(8, Math.round(len / 2.5) + Math.round(wobble / 4));
+        const nx = -dy / len, ny =  dx / len;
+        const tx =  dx / len, ty =  dy / len;
+
+        const result = [p0];
+        for (let i = 1; i < steps; i++) {
+          const t    = i / steps;
+          const bell = Math.sin(t * Math.PI);
+
+          const bx = p0.x + dx * t;
+          const by = p0.y + dy * t;
+
+          const lat  = noise(t * 6.0, seed)       * wobble * bell;
+          const lon  = noise(t * 8.5, seed + 5.2) * wobble * 0.12 * bell;
+
+          result.push({
+            x: bx + nx * lat + tx * lon,
+            y: by + ny * lat + ty * lon,
+          });
+        }
+        result.push(p1);
+        return result;
+      }
+
+      // ── Bouw hyfenstructuur voor een woord ────────────────────────────────────────
+      function buildHyphae(word) {
+        const W = settled.width, H = settled.height;
+        const chars = word.split("").filter(c => font.glyphs[c]);
+        if (!chars.length) return;
+
+        const wobble = +document.getElementById("sl-wobble").value;
+
+        const totalAdv = chars.reduce((s, c) => s + gAdv(c), 0);
+        const S = Math.min((W * 0.80) / totalAdv, (H * 0.60) / FONT_H);
+        const startX = (W - totalAdv * S) / 2;
+        const baseY  = H / 2 + (Y_MAX - FONT_H / 2) * S;
+
+        hyphae  = [];
+        nodePts = [];
+        let seed = 0;
+        let cx   = startX;
+
+        for (const ch of chars) {
+          const pts = gPts(ch);
+          const lsb = gLsb(ch);
+          if (pts.length === 0) { cx += gAdv(ch) * S; continue; }
+
+          const sPts = pts.map(([fx, fy]) => ({
+            x: cx + (lsb + fx) * S,
+            y: baseY - fy * S,
+          }));
+
+          const nodeBase = nodePts.length;
+          sPts.forEach(p => nodePts.push({ ...p, activated: false }));
+
+          for (let i = 0; i < sPts.length - 1; i++) {
+            hyphae.push({
+              path:    organicPath(sPts[i], sPts[i + 1], wobble, seed++),
+              drawn:   0,
+              srcNode: nodeBase + i,
+              dstNode: nodeBase + i + 1,
+            });
+          }
+
+          cx += gAdv(ch) * S;
+        }
+
+        let charStart = 0;
+        for (const ch of chars) {
+          if (nodePts[charStart]) nodePts[charStart].activated = true;
+          charStart += gPts(ch).length;
+        }
+      }
+
+      // ── Teken een knooppunt op de settled canvas ──────────────────────────────────
+      function drawNode(p) {
+        sCtx.save();
+        sCtx.shadowBlur    = 0;
+        sCtx.fillStyle     = "rgba(255, 255, 255, 0.95)";
+        sCtx.beginPath();
+        sCtx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+        sCtx.fill();
+        sCtx.restore();
+      }
+
+      // ── Animatielus ───────────────────────────────────────────────────────────────
+      function animate() {
+        if (!animating) return;
+        frameId = requestAnimationFrame(animate);
+
+        const speed = +document.getElementById("sl-speed").value;
+
+        tCtx.clearRect(0, 0, tips.width, tips.height);
+
+        let anyActive = false;
+
+        for (const h of hyphae) {
+          const total = h.path.length - 1;
+          if (h.drawn >= total) continue;
+
+          anyActive = true;
+          const prev = h.drawn;
+          h.drawn = Math.min(total, h.drawn + speed);
+
+          sCtx.save();
+          sCtx.strokeStyle = "rgba(255, 255, 255, 0.85)";
+          sCtx.lineWidth   = 1.1;
+          sCtx.lineJoin    = "round";
+          sCtx.lineCap     = "round";
+          sCtx.beginPath();
+          sCtx.moveTo(h.path[prev].x, h.path[prev].y);
+          for (let i = prev + 1; i <= h.drawn; i++) sCtx.lineTo(h.path[i].x, h.path[i].y);
+          sCtx.stroke();
+          sCtx.restore();
+
+          if (h.drawn >= total) {
+            const dst = nodePts[h.dstNode];
+            if (dst && !dst.activated) {
+              dst.activated = true;
+              drawNode(dst);
+            }
+          }
+
+          const tipPt   = h.path[h.drawn];
+          const trailN  = Math.min(h.drawn, 12);
+          const trailPt = h.path[h.drawn - trailN];
+
+          tCtx.save();
+          tCtx.shadowBlur  = 0;
+          tCtx.strokeStyle = "rgba(255, 255, 255, 0.6)";
+          tCtx.lineWidth   = 1.5;
+          tCtx.lineCap     = "round";
+          tCtx.beginPath();
+          tCtx.moveTo(trailPt.x, trailPt.y);
+          for (let i = h.drawn - trailN + 1; i <= h.drawn; i++) tCtx.lineTo(h.path[i].x, h.path[i].y);
+          tCtx.stroke();
+          tCtx.restore();
+
+          tCtx.save();
+          tCtx.shadowBlur  = 0;
+          tCtx.fillStyle   = "#ffffff";
+          tCtx.beginPath();
+          tCtx.arc(tipPt.x, tipPt.y, 2.5, 0, Math.PI * 2);
+          tCtx.fill();
+          tCtx.restore();
+        }
+
+        if (!anyActive && phase === 1) {
+          phase = 2;
+          faseEl.style.color = "#555";
+          faseEl.textContent = "groei fase 2 — detail";
+          addSecondaryHyphae();
+        }
+      }
+
+      // ── Secundaire hyphen ─────────────────────────────────────────────────────────
+      function addSecondaryHyphae() {
+        const wobble = +document.getElementById("sl-wobble").value * 0.4;
+        let seed = hyphae.length * 100;
+
+        const sources = [];
+        for (const h of hyphae) {
+          if (h.path.length < 4) continue;
+          const mid = h.path[Math.floor(h.path.length * 0.4 + Math.random() * h.path.length * 0.2)];
+          sources.push(mid);
+        }
+
+        const maxNew = Math.min(sources.length, 40);
+        for (let i = 0; i < maxNew; i++) {
+          const p0 = sources[i];
+          let bestDist = Infinity, bestJ = -1;
+          for (let j = 0; j < sources.length; j++) {
+            if (j === i) continue;
+            const d = Math.hypot(sources[j].x - p0.x, sources[j].y - p0.y);
+            if (d < bestDist && d > 5) { bestDist = d; bestJ = j; }
+          }
+          if (bestJ < 0 || bestDist > 120) continue;
+
+          const p1 = sources[bestJ];
+          hyphae.push({
+            path:    organicPath(p0, p1, wobble, seed++),
+            drawn:   0,
+            srcNode: -1,
+            dstNode: -1,
+          });
+        }
+
+        animating = true;
+        frameId = requestAnimationFrame(animate);
+      }
+
+      // ── Initialen knooppunten tekenen ─────────────────────────────────────────────
+      function drawInitialNodes() {
+        for (const n of nodePts) {
+          if (n.activated) drawNode(n);
+        }
+      }
+
+      // ── Resize & restart ──────────────────────────────────────────────────────────
+      function resize() {
+        settled.width  = tips.width  = window.innerWidth;
+        settled.height = tips.height = window.innerHeight;
+      }
+
+      function restart() {
+        if (frameId) cancelAnimationFrame(frameId);
+        animating = false;
+        phase = 1;
+        faseEl.style.color = "#333";
+        faseEl.textContent = "groei fase 1";
+
+        resize();
+
+        sCtx.fillStyle = "#000";
+        sCtx.fillRect(0, 0, settled.width, settled.height);
+        tCtx.clearRect(0, 0, tips.width, tips.height);
+
+        const word = document.getElementById("txt").value.trim() || "nee";
+        buildHyphae(word);
+        drawInitialNodes();
+
+        animating = true;
+        frameId = requestAnimationFrame(animate);
+      }
+
+      // ── UI-bindings ───────────────────────────────────────────────────────────────
+      document.getElementById("btn-restart").addEventListener("click", restart);
+      document.getElementById("txt").addEventListener("keydown", e => {
+        if (e.key === "Enter") restart();
+      });
+      window.addEventListener("resize", restart);
+
+      // ── Init ──────────────────────────────────────────────────────────────────────
+      fetch(FONT_PATH)
+        .then(r => r.json())
+        .then(f => {
+          font = f;
+          restart();
+        });
+    </script>
+  </body>
+</html>

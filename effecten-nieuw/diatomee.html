@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="nl">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Diatomee — letter</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; background: #fff; overflow: hidden; }
+      canvas { position: fixed; inset: 0; width: 100%; height: 100%; }
+
+      #ui {
+        position: fixed;
+        bottom: 24px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 10;
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        background: rgba(255,255,255,0.9);
+        border: 1px solid #ccc;
+        border-radius: 3px;
+        padding: 10px 16px;
+        font-family: monospace;
+        font-size: 10px;
+        color: #666;
+        white-space: nowrap;
+      }
+      #ui label { display: flex; align-items: center; gap: 6px; }
+      #ui input[type="text"] {
+        background: #fff;
+        border: 1px solid #aaa;
+        color: #222;
+        font-family: monospace;
+        font-size: 13px;
+        padding: 3px 7px;
+        width: 80px;
+        outline: none;
+        letter-spacing: 0.1em;
+      }
+      #ui input[type="text"]:focus { border-color: #555; }
+      #ui input[type="range"] {
+        -webkit-appearance: none;
+        width: 80px; height: 2px;
+        background: #bbb;
+        outline: none;
+        cursor: pointer;
+      }
+      #ui input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        width: 10px; height: 10px;
+        border-radius: 50%;
+        background: #555;
+        cursor: pointer;
+      }
+      #ui button {
+        background: #fff;
+        border: 1px solid #aaa;
+        color: #444;
+        font-family: monospace;
+        font-size: 10px;
+        padding: 4px 10px;
+        cursor: pointer;
+        letter-spacing: 0.05em;
+      }
+      #ui button:hover { border-color: #555; color: #000; }
+    </style>
+  </head>
+  <body>
+    <canvas id="c"></canvas>
+
+    <div id="ui">
+      <label>
+        tekst
+        <input type="text" id="txt" value="nee" maxlength="7" spellcheck="false" />
+      </label>
+      <label>
+        dichtheid
+        <input type="range" id="sl-density" min="10" max="60" value="30" />
+      </label>
+      <label>
+        spreiding
+        <input type="range" id="sl-spread" min="20" max="120" value="60" />
+      </label>
+      <button id="btn-restart">↺ opnieuw</button>
+    </div>
+
+    <script>
+      const FONT_PATH = "../fonts/nee.json";
+      const Y_MAX = 16, Y_MIN = -3, FONT_H = Y_MAX - Y_MIN;
+
+      let font = null;
+      let colonies = [];   // [{x, y, circles:[{cx,cy,rx,ry,angle,dist,born}], revealed:0}]
+      let letterPaths = []; // [{pts:[{x,y}]}] for drawing the skeleton
+      let frameId = null;
+      let startTime = null;
+
+      const canvas = document.getElementById("c");
+      const ctx = canvas.getContext("2d");
+
+      // ── Font helpers ──────────────────────────────────────────────────────────────
+      function gPts(l) {
+        const g = font.glyphs[l];
+        return !g ? [] : Array.isArray(g) ? g : (g.points ?? []);
+      }
+      function gLsb(l) {
+        const g = font.glyphs[l];
+        return !g ? 0 : (font.lsb?.[l] ?? (Array.isArray(g) ? 0 : (g.lsb ?? 0)));
+      }
+      function gAdv(l) {
+        const g = font.glyphs[l];
+        if (!g) return 0;
+        const pts = gPts(l);
+        const rsb = font.rsb?.[l] ?? (Array.isArray(g) ? 2 : (g.rsb ?? 2));
+        return gLsb(l) + (pts.length ? Math.max(...pts.map(p => p[0])) : 0) + rsb;
+      }
+
+      // ── Seed-based random (deterministisch per kolonie) ───────────────────────────
+      function seededRand(seed) {
+        let s = seed;
+        return function() {
+          s = (s * 1664525 + 1013904223) & 0xffffffff;
+          return (s >>> 0) / 0xffffffff;
+        };
+      }
+
+      // ── Maak een diatomee-kolonie bij punt (px, py) ───────────────────────────────
+      // cone = totale waaierhoek (klein = smalle bundel, 2π = volledig rond)
+      function buildColony(px, py, baseAngle, cone, seed) {
+        const rand = seededRand(seed);
+        const spreadSlider = +document.getElementById("sl-spread").value;
+
+        const CELL_R  = 2.2;
+        const ARM_LEN = spreadSlider * (0.5 + rand() * 0.9); // lengte varieert per kolonie
+        const fullCircle = cone > Math.PI * 1.8;
+        const NUM_ARMS = fullCircle
+          ? 16 + Math.floor(rand() * 10)
+          : Math.round(4 + (cone / Math.PI) * 12 + rand() * 4);
+
+        const circles = [];
+
+        for (let a = 0; a < NUM_ARMS; a++) {
+          const t = NUM_ARMS > 1 ? a / (NUM_ARMS - 1) : 0.5;
+          const armAngle = fullCircle
+            ? (a / NUM_ARMS) * Math.PI * 2
+            : baseAngle + (t - 0.5) * cone;
+
+          // Armlengte: klokvorm (korter aan randen), tenzij vol rond
+          const bell = fullCircle ? 1 : Math.sin(t * Math.PI);
+          const thisLen = ARM_LEN * (0.3 + bell * 0.7) * (0.6 + rand() * 0.4);
+
+          // Knik: groter = organischer
+          const kink      = (rand() - 0.5) * 0.55;
+          const kinkSpeed = 0.5 + rand() * 1.5; // hoe snel de knik opbouwt
+
+          const numCells = Math.floor(thisLen / (CELL_R * 2.1));
+
+          for (let i = 0; i < numCells; i++) {
+            const frac = i / Math.max(numCells - 1, 1);
+            const curAngle = armAngle + kink * Math.sin(frac * Math.PI * kinkSpeed);
+            const dist = CELL_R + i * CELL_R * 2.1;
+
+            const cx = px + Math.cos(curAngle) * dist;
+            const cy = py + Math.sin(curAngle) * dist;
+
+            const rx = CELL_R * (0.85 + rand() * 0.3);
+            const ry = rx * (0.48 + rand() * 0.28);
+
+            circles.push({ cx, cy, rx, ry, rot: curAngle, dist });
+          }
+        }
+
+        circles.sort((a, b) => a.dist - b.dist);
+        return { x: px, y: py, circles, revealed: 0 };
+      }
+
+      // ── Kies richting en waaierhoek voor een koloniepunt ─────────────────────────
+      // Geeft { angle, cone } terug op basis van een willekeurige strategie.
+      function colonyDir(px, py, centX, centY, strokeDx, strokeDy, rand) {
+        const strategy = Math.floor(rand() * 5);
+
+        // Uitwaarts van centroïde
+        const outDx = px - centX, outDy = py - centY;
+        const outLen = Math.hypot(outDx, outDy) || 1;
+        const outAngle = Math.atan2(outDy / outLen, outDx / outLen);
+
+        // Tangentieel langs de stroke
+        const tangAngle = Math.atan2(strokeDy, strokeDx) + (rand() > 0.5 ? 0 : Math.PI);
+
+        // Volledig willekeurig
+        const rndAngle = rand() * Math.PI * 2;
+
+        switch (strategy) {
+          case 0: return { angle: outAngle,                cone: Math.PI * 0.6 };  // uitwaarts, normaal
+          case 1: return { angle: outAngle,                cone: Math.PI * 0.25 }; // uitwaarts, smalle bundel
+          case 2: return { angle: tangAngle,               cone: Math.PI * 0.5 };  // tangentieel
+          case 3: return { angle: rndAngle,                cone: Math.PI * 0.7 };  // willekeurige richting
+          case 4: return { angle: 0,                       cone: Math.PI * 2 };    // volledig rond
+        }
+      }
+
+      // ── Bouw alle kolonies voor een woord ─────────────────────────────────────────
+      function buildColonies(word) {
+        const W = canvas.width, H = canvas.height;
+        const chars = word.split("").filter(c => font.glyphs[c]);
+        if (!chars.length) return;
+
+        const totalAdv = chars.reduce((s, c) => s + gAdv(c), 0);
+        const S = Math.min((W * 0.55) / totalAdv, (H * 0.40) / FONT_H);
+        const startX = (W - totalAdv * S) / 2;
+        const baseY  = H / 2 + (Y_MAX - FONT_H / 2) * S;
+
+        const densitySlider = +document.getElementById("sl-density").value;
+        // aantal extra kolonies per segment (0 = alleen ankerpunten, max = veel tussenpts)
+        const extraPerSeg = Math.round((densitySlider - 10) / 50 * 4); // 0–4
+
+        colonies = [];
+        letterPaths = [];
+
+        let cx = startX;
+        let seedCounter = 1;
+
+        for (const ch of chars) {
+          const pts = gPts(ch);
+          const lsb = gLsb(ch);
+          if (!pts.length) { cx += gAdv(ch) * S; continue; }
+
+          const sPts = pts.map(([fx, fy]) => ({
+            x: cx + (lsb + fx) * S,
+            y: baseY - fy * S,
+          }));
+
+          letterPaths.push({ pts: sPts });
+
+          const centX = sPts.reduce((s, p) => s + p.x, 0) / sPts.length;
+          const centY = sPts.reduce((s, p) => s + p.y, 0) / sPts.length;
+
+          // Verzamel alle punten: ankerpunten + tussenliggende punten
+          const spawnPts = [];
+
+          for (let i = 0; i < sPts.length; i++) {
+            const p0 = sPts[i];
+            const p1 = sPts[Math.min(i + 1, sPts.length - 1)];
+            const sdx = p1.x - p0.x, sdy = p1.y - p0.y;
+            const slen = Math.hypot(sdx, sdy) || 1;
+
+            spawnPts.push({ x: p0.x, y: p0.y, sdx: sdx / slen, sdy: sdy / slen });
+
+            // Extra tussenliggende punten langs het segment
+            for (let e = 1; e <= extraPerSeg && i < sPts.length - 1; e++) {
+              const frac = e / (extraPerSeg + 1);
+              spawnPts.push({
+                x: p0.x + sdx * frac,
+                y: p0.y + sdy * frac,
+                sdx: sdx / slen,
+                sdy: sdy / slen,
+              });
+            }
+          }
+
+          for (const sp of spawnPts) {
+            const dirRand = seededRand(seedCounter * 7919);
+            const { angle, cone } = colonyDir(sp.x, sp.y, centX, centY, sp.sdx, sp.sdy, dirRand);
+            colonies.push(buildColony(sp.x, sp.y, angle, cone, seedCounter++));
+          }
+
+          cx += gAdv(ch) * S;
+        }
+      }
+
+      // ── Teken het skeleton van de letter ─────────────────────────────────────────
+      function drawSkeleton() {
+        ctx.save();
+        ctx.strokeStyle = "rgba(0,0,0,0.55)";
+        ctx.lineWidth = 1.8;
+        ctx.lineJoin = "round";
+        ctx.lineCap = "round";
+        for (const { pts } of letterPaths) {
+          ctx.beginPath();
+          ctx.moveTo(pts[0].x, pts[0].y);
+          for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      // ── Teken één diatomee-cirkel ─────────────────────────────────────────────────
+      function drawDiatom(cx, cy, rx, ry, rot, alpha) {
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.translate(cx, cy);
+        ctx.rotate(rot);
+        ctx.beginPath();
+        ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
+        ctx.strokeStyle = "#1a1a1a";
+        ctx.lineWidth = 0.5;
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // ── Teken ankerpunt ───────────────────────────────────────────────────────────
+      function drawAnchor(x, y) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(x, y, 1.5, 0, Math.PI * 2);
+        ctx.fillStyle = "#1a1a1a";
+        ctx.fill();
+        ctx.restore();
+      }
+
+      // ── Animatielus ───────────────────────────────────────────────────────────────
+      // Elke kolonie onthult zijn cirkels sequentieel.
+      // Alle kolonies starten tegelijk maar groeien met licht verschillende snelheden.
+
+      const CIRCLES_PER_FRAME = 2; // hoeveel cirkels per kolonie per frame bijkomen
+
+      function animate(ts) {
+        frameId = requestAnimationFrame(animate);
+        if (!startTime) startTime = ts;
+
+        // Hereken volledig
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        drawSkeleton();
+
+        let anyActive = false;
+
+        for (const col of colonies) {
+          // Onthul nieuwe cirkels
+          if (col.revealed < col.circles.length) {
+            col.revealed = Math.min(col.circles.length, col.revealed + CIRCLES_PER_FRAME);
+            anyActive = true;
+          }
+
+          // Teken onthulde cirkels
+          for (let i = 0; i < col.revealed; i++) {
+            const c = col.circles[i];
+            // Cirkels verder weg zijn iets transparanter
+            const alpha = 0.75 - (c.dist / 200) * 0.3;
+            drawDiatom(c.cx, c.cy, c.rx, c.ry, c.rot, Math.max(0.2, alpha));
+          }
+
+          // Ankerpunt bovenop
+          drawAnchor(col.x, col.y);
+        }
+
+        if (!anyActive) cancelAnimationFrame(frameId);
+      }
+
+      // ── Start / resize ────────────────────────────────────────────────────────────
+      function restart() {
+        if (frameId) cancelAnimationFrame(frameId);
+        startTime = null;
+
+        canvas.width  = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const word = document.getElementById("txt").value.trim() || "nee";
+        buildColonies(word);
+
+        frameId = requestAnimationFrame(animate);
+      }
+
+      document.getElementById("btn-restart").addEventListener("click", restart);
+      document.getElementById("txt").addEventListener("keydown", e => {
+        if (e.key === "Enter") restart();
+      });
+      window.addEventListener("resize", restart);
+
+      fetch(FONT_PATH)
+        .then(r => r.json())
+        .then(f => { font = f; restart(); });
+    </script>
+  </body>
+</html>
