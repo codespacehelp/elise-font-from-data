@@ -66,6 +66,45 @@
     #toolbar button:disabled { opacity: 0.35; cursor: default; }
     .sep { width: 1px; height: 22px; background: #333; margin: 0 2px; }
     #lbl-active { margin-left: auto; font-size: 12px; color: #555; }
+    .inp-metric {
+      width: 40px; background: #252525; color: #bbb;
+      border: 1px solid #444; padding: 3px 5px;
+      border-radius: 3px; font-family: monospace; font-size: 12px;
+      outline: none;
+    }
+    .inp-metric:focus { border-color: #4a9eff; }
+    .inp-global { border-color: #3a5a3a; }
+    .inp-global:focus { border-color: #6bcc6b; }
+    .metric-group {
+      display: flex; align-items: center; gap: 4px;
+      font-size: 12px; color: #bbb;
+    }
+    .metric-lbl-green { color: #6bcc6b; font-size: 11px; }
+    .metric-lbl-red   { color: #ff6b6b; font-size: 11px; }
+    .metric-lbl-blue  { color: #8ac; font-size: 11px; }
+
+    /* ── Preview panel ── */
+    #preview-panel {
+      width: 280px; min-width: 200px;
+      background: #1c1c1c;
+      border-left: 1px solid #333;
+      display: flex; flex-direction: column;
+      flex-shrink: 0;
+    }
+    #preview-toolbar {
+      padding: 8px 10px;
+      border-bottom: 1px solid #333;
+      flex-shrink: 0;
+    }
+    #preview-toolbar label { font-size: 11px; color: #555; display: block; margin-bottom: 4px; }
+    #preview-input {
+      width: 100%; background: #252525; color: #ddd;
+      border: 1px solid #444; padding: 4px 8px;
+      border-radius: 3px; font-family: monospace; font-size: 13px;
+      outline: none; box-sizing: border-box;
+    }
+    #preview-input:focus { border-color: #4a9eff; }
+    #preview-canvas { flex: 1; display: block; width: 100%; }
 
     /* ── Canvas area ── */
     #canvas-area {
@@ -119,6 +158,19 @@
       <div class="sep"></div>
       <button id="btn-undo" disabled title="Cmd/Ctrl+Z">↩ Undo</button>
       <button id="btn-redo" disabled title="Cmd/Ctrl+Shift+Z">↪ Redo</button>
+      <button id="btn-save" title="Opslaan (Cmd/Ctrl+S)">💾 Save</button>
+      <div class="sep"></div>
+      <div class="metric-group">
+        <span class="metric-lbl-green">Links:</span>
+        <input id="inp-lsb" class="inp-metric" type="number" min="-5" max="20" value="0" title="Linker zijlijn (left side bearing)">
+        <span class="metric-lbl-red">Rechts:</span>
+        <input id="inp-rsb" class="inp-metric" type="number" min="0" max="20" value="2" title="Rechter zijlijn (right side bearing)">
+      </div>
+      <div class="sep"></div>
+      <div class="metric-group">
+        <span class="metric-lbl-blue">x-h:</span>
+        <input id="inp-xheight" class="inp-metric inp-global" type="number" min="1" max="16" value="9" title="x-hoogte (globaal voor alle letters)">
+      </div>
       <span id="lbl-active">Editing: a</span>
     </div>
 
@@ -134,6 +186,14 @@
       </div>
     </div>
   </div>
+
+  <aside id="preview-panel">
+    <div id="preview-toolbar">
+      <label for="preview-input">Preview tekst</label>
+      <input id="preview-input" type="text" placeholder="Type letters..." value="abcde">
+    </div>
+    <canvas id="preview-canvas"></canvas>
+  </aside>
 
   <script src="editor.js" type="module"></script>
 </body>
