@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Studio — nee</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      height: 100%; overflow: hidden;
+      font-family: monospace;
+      background: #fff; color: #111;
+    }
+    body { display: flex; }
+
+    /* ══════════════════════════════════════════════
+       SHARED — buttons & inputs
+    ══════════════════════════════════════════════ */
+    button {
+      background: #fff; color: #111;
+      border: 1px solid #111;
+      padding: 4px 10px; border-radius: 2px;
+      cursor: pointer; font-family: monospace; font-size: 12px;
+      white-space: nowrap; transition: box-shadow .08s, transform .08s;
+    }
+    button:hover { background: #f5f5f5; }
+    button.active, button.on {
+      box-shadow: 2px 2px 0 #111;
+      transform: translate(-1px, -1px);
+    }
+    button:disabled { opacity: .3; cursor: default; box-shadow: none; transform: none; }
+
+    .sep { width: 1px; height: 22px; background: #ddd; margin: 0 2px; flex-shrink: 0; }
+
+    /* Custom range slider — thin line + filled black dot */
+    input[type="range"] {
+      -webkit-appearance: none; appearance: none;
+      width: 80px; height: 2px;
+      background: #111; border-radius: 0;
+      cursor: pointer; outline: none;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 11px; height: 11px;
+      border-radius: 50%; background: #111;
+      cursor: pointer;
+    }
+    input[type="range"]::-moz-range-thumb {
+      width: 11px; height: 11px;
+      border-radius: 50%; background: #111; border: none;
+      cursor: pointer;
+    }
+    .val { color: #111; font-size: 11px; min-width: 26px; text-align: right; }
+
+    /* ══════════════════════════════════════════════
+       EDITOR — sidebar
+    ══════════════════════════════════════════════ */
+    #sidebar {
+      width: 156px; min-width: 156px;
+      background: #fff;
+      border-right: 1px solid #111;
+      overflow-y: auto;
+      padding: 6px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 4px; align-content: start;
+    }
+    .glyph-item {
+      display: flex; flex-direction: column; align-items: center;
+      padding: 2px; border-radius: 2px;
+      border: 1px solid transparent; cursor: pointer; gap: 2px;
+    }
+    .glyph-item:hover { background: #f5f5f5; }
+    .glyph-item.active {
+      border-color: #111;
+      box-shadow: 2px 2px 0 #111;
+      transform: translate(-1px, -1px);
+    }
+    .glyph-label { font-size: 10px; color: #aaa; }
+    .glyph-item.active .glyph-label { color: #111; }
+
+    /* ══════════════════════════════════════════════
+       EDITOR — main column
+    ══════════════════════════════════════════════ */
+    #main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+
+    /* Editor toolbar */
+    #toolbar {
+      background: #fff; border-bottom: 1px solid #ddd;
+      padding: 6px 10px; display: flex; align-items: center;
+      gap: 6px; flex-shrink: 0; flex-wrap: wrap;
+    }
+    #lbl-active { margin-left: auto; font-size: 11px; color: #aaa; }
+    .inp-metric {
+      width: 40px; background: #fff; color: #111;
+      border: 1px solid #111; padding: 3px 5px;
+      border-radius: 2px; font-family: monospace; font-size: 12px; outline: none;
+    }
+    .inp-metric:focus { box-shadow: 2px 2px 0 #111; }
+    .metric-group { display: flex; align-items: center; gap: 4px; font-size: 12px; }
+    .metric-lbl { font-size: 11px; color: #111; }
+
+    /* Editor canvas */
+    #canvas-area { flex: 1; overflow: auto; padding: 12px; background: #fff; }
+    #editor-canvas { display: block; cursor: crosshair; }
+
+    /* JSON panel */
+    #json-panel {
+      border-top: 1px solid #ddd; background: #fff;
+      padding: 6px 10px; display: flex; gap: 8px;
+      align-items: stretch; flex-shrink: 0;
+    }
+    #json-output {
+      flex: 1; height: 80px;
+      background: #fff; color: #d4879c;   /* licht roze */
+      border: 1px solid #ddd; padding: 6px 8px;
+      font-family: monospace; font-size: 11px;
+      resize: vertical; border-radius: 2px; outline: none;
+    }
+    #json-output:focus { border-color: #111; }
+    #json-buttons { display: flex; flex-direction: column; gap: 5px; }
+
+    /* ══════════════════════════════════════════════
+       RESIZE HANDLE
+    ══════════════════════════════════════════════ */
+    #resize-handle {
+      width: 5px; flex-shrink: 0;
+      background: #fff;
+      border-left: 1px solid #111;
+      cursor: col-resize;
+      position: relative;
+      transition: background .15s;
+    }
+    #resize-handle:hover { background: #f0f0f0; }
+    /* Arrow indicator in the middle */
+    #resize-handle::after {
+      content: '◂▸';
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%) rotate(0deg);
+      font-size: 8px; color: #999;
+      writing-mode: horizontal-tb;
+      white-space: nowrap;
+      pointer-events: none;
+    }
+
+    /* ══════════════════════════════════════════════
+       OUTLINE — right panel
+    ══════════════════════════════════════════════ */
+    #outline-panel {
+      width: 360px; min-width: 220px; max-width: 70vw;
+      background: #fff;
+      display: flex; flex-direction: column;
+      flex-shrink: 0; overflow: hidden;
+    }
+
+    /* Outline controls */
+    #outline-controls {
+      background: #fff; border-bottom: 1px solid #ddd;
+      padding: 8px 10px; display: flex; flex-direction: column;
+      gap: 7px; flex-shrink: 0;
+    }
+    #outline-controls .row {
+      display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    }
+    #outline-controls label {
+      font-size: 10px; color: #999; white-space: nowrap; min-width: 52px;
+    }
+    #ol-text {
+      flex: 1; background: #fff; color: #111;
+      border: 1px solid #111; padding: 3px 7px;
+      border-radius: 2px; font-family: monospace; font-size: 13px; outline: none;
+    }
+    #ol-text:focus { box-shadow: 2px 2px 0 #111; }
+    #outline-controls .sep-v { width: 1px; height: 16px; background: #ddd; flex-shrink: 0; }
+
+    /* Outline canvas area */
+    #ol-canvas-wrap {
+      flex: 1; overflow: auto;
+      display: flex; align-items: center; justify-content: center;
+      background: #fff; padding: 16px;
+    }
+    #ol-canvas-wrap.bg-beige { background: #f5f0e8; }
+    #outline-canvas { display: block; }
+
+    /* Export bar */
+    #ol-export-bar {
+      background: #fff; border-top: 1px solid #ddd;
+      padding: 6px 10px; flex-shrink: 0;
+      display: flex; gap: 6px;
+    }
+    #ol-export-bar button { flex: 1; }
+
+    /* Hidden — editor.js needs these DOM IDs */
+    #preview-toolbar, #preview-canvas { display: none !important; }
+  </style>
+</head>
+<body>
+
+<!-- ── Editor: sidebar ─────────────────────────────────────────── -->
+<aside id="sidebar"></aside>
+
+<!-- ── Editor: main column ────────────────────────────────────── -->
+<div id="main">
+
+  <div id="toolbar">
+    <button id="btn-add"  class="active" title="P">✏ Add</button>
+    <button id="btn-move" title="V">⊹ Select</button>
+    <div class="sep"></div>
+    <button id="btn-undo" disabled title="Cmd/Ctrl+Z">↩ Undo</button>
+    <button id="btn-redo" disabled title="Cmd/Ctrl+Shift+Z">↪ Redo</button>
+    <div class="sep"></div>
+    <div class="metric-group">
+      <span class="metric-lbl">Links:</span>
+      <input id="inp-lsb" class="inp-metric" type="number" min="-5" max="20" value="0">
+      <span class="metric-lbl">Rechts:</span>
+      <input id="inp-rsb" class="inp-metric" type="number" min="0"  max="20" value="2">
+    </div>
+    <div class="sep"></div>
+    <div class="metric-group">
+      <span class="metric-lbl">x-h:</span>
+      <input id="inp-xheight" class="inp-metric" type="number" min="1" max="16" value="9">
+    </div>
+    <span id="lbl-active">Editing: a</span>
+  </div>
+
+  <div id="canvas-area">
+    <canvas id="editor-canvas"></canvas>
+  </div>
+
+  <div id="json-panel">
+    <textarea id="json-output" spellcheck="false"></textarea>
+    <div id="json-buttons">
+      <button id="btn-copy">Copy JSON</button>
+      <button id="btn-load">Load JSON</button>
+    </div>
+  </div>
+
+</div><!-- /#main -->
+
+<!-- ── Resize handle ──────────────────────────────────────────── -->
+<div id="resize-handle" title="Sleep om paneel te vergroten/verkleinen"></div>
+
+<!-- ── Outline panel (right) ──────────────────────────────────── -->
+<aside id="outline-panel">
+
+  <!-- Hidden stubs — editor.js refs these -->
+  <div id="preview-toolbar"><input id="preview-input" value="abcde"></div>
+  <canvas id="preview-canvas"></canvas>
+
+  <div id="outline-controls">
+
+    <div class="row">
+      <label>Tekst</label>
+      <input id="ol-text" type="text" value="nee">
+    </div>
+
+    <div class="row">
+      <label>Dichtheid</label>
+      <input type="range" id="ol-spacing" min="0.05" max="2" step="0.01" value="0.35">
+      <span class="val" id="ol-val-spacing">0.35</span>
+      <div class="sep-v"></div>
+      <label>Grootte</label>
+      <input type="range" id="ol-radius" min="1" max="30" step="0.5" value="7">
+      <span class="val" id="ol-val-radius">7</span>
+    </div>
+
+    <div class="row">
+      <label>Lijndikte</label>
+      <input type="range" id="ol-stroke" min="0.5" max="8" step="0.5" value="1.5">
+      <span class="val" id="ol-val-stroke">1.5</span>
+      <div class="sep-v"></div>
+      <label>Schaal</label>
+      <input type="range" id="ol-scale" min="4" max="60" step="1" value="16">
+      <span class="val" id="ol-val-scale">16</span>
+    </div>
+
+    <div class="row">
+      <label>Vorm</label>
+      <button class="on"  data-shape="via">◎</button>
+      <button data-shape="pad">▬</button>
+      <button data-shape="smd">□</button>
+      <button data-shape="tracepad">⊟</button>
+      <button data-shape="trace">—</button>
+      <button data-shape="mix">Mix</button>
+    </div>
+
+    <div class="row">
+      <label>Stijl</label>
+      <button data-style="filled">Gevuld</button>
+      <button class="on" data-style="outline">Outline</button>
+      <button data-style="both">Beide</button>
+      <div class="sep-v"></div>
+      <label>Overlap</label>
+      <button id="ol-xor">XOR</button>
+      <div class="sep-v"></div>
+      <label>BG</label>
+      <button id="ol-bg">Beige</button>
+    </div>
+
+  </div>
+
+  <div id="ol-canvas-wrap">
+    <canvas id="outline-canvas"></canvas>
+  </div>
+
+  <div id="ol-export-bar">
+    <button id="btn-export">⬇ JSON</button>
+    <button id="btn-svg">⬇ SVG</button>
+  </div>
+
+</aside>
+
+<!-- ── Editor logic ───────────────────────────────────────────── -->
+<script src="editor.js" type="module"></script>
+
+<!-- ── Resize logic ──────────────────────────────────────────── -->
+<script>
+(function () {
+  const handle = document.getElementById('resize-handle');
+  const panel  = document.getElementById('outline-panel');
+  let startX, startW;
+
+  handle.addEventListener('mousedown', e => {
+    startX = e.clientX;
+    startW = panel.offsetWidth;
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onDrag);
+    document.addEventListener('mouseup', stopDrag);
+  });
+
+  function onDrag(e) {
+    const dx = startX - e.clientX;
+    panel.style.width = Math.max(220, Math.min(window.innerWidth * 0.7, startW + dx)) + 'px';
+  }
+
+  function stopDrag() {
+    document.body.style.userSelect = '';
+    document.removeEventListener('mousemove', onDrag);
+    document.removeEventListener('mouseup', stopDrag);
+  }
+})();
+</script>
+
+<!-- ── Outline logic ──────────────────────────────────────────── -->
+<script>
+const ol = {
+  font: null, text: 'nee',
+  spacing: 0.35, radius: 7, strokeWidth: 1.5,
+  style: 'outline', shape: 'via',
+  xor: false, scale: 16, beigeBg: false,
+};
+
+const Y_MAX_OL  = 16;
+const Y_MIN_OL  = -3;
+const MIX_SHAPES = ['via', 'pad', 'smd', 'tracepad', 'trace'];
+
+const olCanvas = document.getElementById('outline-canvas');
+const olCtx    = olCanvas.getContext('2d');
+const olWrap   = document.getElementById('ol-canvas-wrap');
+
+window.addEventListener('fontChanged', () => {
+  if (!ol.font && window._studioFont) ol.font = window._studioFont;
+  drawOutline();
+});
+requestAnimationFrame(() => {
+  if (!ol.font && window._studioFont) { ol.font = window._studioFont; drawOutline(); }
+});
+
+function sampleStroke(pts, spacing) {
+  if (!pts || pts.length === 0) return [];
+  const out = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const [x0, y0] = pts[i], [x1, y1] = pts[i + 1];
+    const dx = x1 - x0, dy = y1 - y0;
+    const len = Math.hypot(dx, dy);
+    const steps = Math.max(1, Math.floor(len / spacing));
+    for (let s = 0; s < steps; s++) {
+      const t = s / steps;
+      out.push([x0 + dx * t, y0 + dy * t]);
+    }
+  }
+  out.push([...pts[pts.length - 1]]);
+  return out;
+}
+
+function shapePath(octx, cx, cy, r, type) {
+  octx.beginPath();
+  switch (type) {
+
+    case 'via': {
+      // Donut: buitenste ring CW, binnenste ring CCW → gat bij fill
+      octx.arc(cx, cy, r, 0, Math.PI * 2, false);
+      const iR = r * 0.40;
+      octx.moveTo(cx + iR, cy);
+      octx.arc(cx, cy, iR, 0, Math.PI * 2, true);
+      break;
+    }
+
+    case 'pad': {
+      // Horizontale stadium (afgeronde rechthoek)
+      const pw = r * 1.3, ph = r * 0.52;
+      if (octx.roundRect) octx.roundRect(cx - pw, cy - ph, pw * 2, ph * 2, ph);
+      else octx.rect(cx - pw, cy - ph, pw * 2, ph * 2);
+      break;
+    }
+
+    case 'smd': {
+      // Vierkant SMD-pad
+      const s = r * 0.88;
+      octx.rect(cx - s, cy - s, s * 2, s * 2);
+      break;
+    }
+
+    case 'tracepad': {
+      // Twee ronde pads + verbindende trace
+      const pR   = r * 0.36;
+      const dist = r * 0.85;
+      const trH  = r * 0.14;
+      octx.arc(cx - dist, cy, pR, 0, Math.PI * 2);
+      octx.moveTo(cx + dist + pR, cy);
+      octx.arc(cx + dist, cy, pR, 0, Math.PI * 2);
+      const tx = -dist + pR * 0.7;
+      octx.moveTo(cx + tx, cy - trH);
+      octx.lineTo(cx - tx, cy - trH);
+      octx.lineTo(cx - tx, cy + trH);
+      octx.lineTo(cx + tx, cy + trH);
+      octx.closePath();
+      break;
+    }
+
+    case 'trace': {
+      // Dunne horizontale spoor
+      const th = r * 0.16;
+      octx.rect(cx - r, cy - th, r * 2, th * 2);
+      break;
+    }
+  }
+}
+
+function drawOutline() {
+  if (!ol.font) return;
+  const S = ol.scale;
+  const glyphs  = ol.font.glyphs;
+  const letters = ol.text.split('').filter(l => glyphs[l]);
+
+  function advance(l) {
+    const g = ol.font.glyphs[l]; if (!g) return 0;
+    const pts  = Array.isArray(g) ? g : (g.points ?? []);
+    const lsb  = ol.font.lsb?.[l] ?? g.lsb ?? 0;
+    const rsb  = ol.font.rsb?.[l] ?? g.rsb ?? 2;
+    const maxX = pts.length ? Math.max(...pts.map(p => p[0])) : 0;
+    return lsb + maxX + rsb;
+  }
+
+  const totalWidth = letters.reduce((s, l) => s + advance(l), 0);
+  const fontHeight = Y_MAX_OL - Y_MIN_OL;
+  const PAD = Math.max(ol.radius * 2 + 10, 30);
+  const W   = totalWidth * S + PAD * 2;
+  const H   = fontHeight  * S + PAD * 2;
+
+  olCanvas.width  = Math.ceil(W);
+  olCanvas.height = Math.ceil(H);
+
+  const bgCol = ol.beigeBg ? '#f5f0e8' : '#ffffff';
+  olCtx.fillStyle = bgCol;
+  olCtx.fillRect(0, 0, olCanvas.width, olCanvas.height);
+
+  const off = document.createElement('canvas');
+  off.width = olCanvas.width; off.height = olCanvas.height;
+  const octx = off.getContext('2d');
+  octx.clearRect(0, 0, off.width, off.height);
+  octx.globalCompositeOperation = ol.xor ? 'xor' : 'source-over';
+
+  const shapeCol  = 'rgba(17,17,17,0.88)';
+  const baselineY = PAD + Y_MAX_OL * S;
+  let curX = PAD, sampleIdx = 0;
+
+  for (const letter of letters) {
+    const g   = ol.font.glyphs[letter]; if (!g) continue;
+    const pts = Array.isArray(g) ? g : (g.points ?? []);
+    const lsb = ol.font.lsb?.[letter] ?? g.lsb ?? 0;
+    const samples = sampleStroke(pts, ol.spacing);
+
+    for (const [fx, fy] of samples) {
+      const cx   = curX + lsb * S + fx * S;
+      const cy   = baselineY - fy * S;
+      const r    = ol.radius;
+      const type = ol.shape === 'mix' ? MIX_SHAPES[sampleIdx % MIX_SHAPES.length] : ol.shape;
+      shapePath(octx, cx, cy, r, type);
+      if (ol.style === 'filled' || ol.style === 'both') { octx.fillStyle = shapeCol; octx.fill(); }
+      if (ol.style === 'outline' || ol.style === 'both') {
+        octx.strokeStyle = shapeCol; octx.lineWidth = ol.strokeWidth; octx.stroke();
+      }
+      sampleIdx++;
+    }
+    curX += advance(letter) * S;
+  }
+  olCtx.drawImage(off, 0, 0);
+}
+
+// ── Events ─────────────────────────────────────────────────────────────────────
+document.getElementById('ol-text').addEventListener('input', e => { ol.text = e.target.value; drawOutline(); });
+
+function slider(id, valId, key, fmt) {
+  const sl = document.getElementById(id), vl = document.getElementById(valId);
+  sl.addEventListener('input', () => {
+    ol[key] = fmt === 'int' ? parseInt(sl.value) : parseFloat(sl.value);
+    vl.textContent = fmt === 'int' ? ol[key] : Number(ol[key]).toFixed(2);
+    drawOutline();
+  });
+}
+slider('ol-spacing', 'ol-val-spacing', 'spacing',     'float');
+slider('ol-radius',  'ol-val-radius',  'radius',      'float');
+slider('ol-stroke',  'ol-val-stroke',  'strokeWidth', 'float');
+slider('ol-scale',   'ol-val-scale',   'scale',       'int');
+
+document.querySelectorAll('[data-shape]').forEach(btn => btn.addEventListener('click', () => {
+  document.querySelectorAll('[data-shape]').forEach(b => b.classList.remove('on'));
+  btn.classList.add('on'); ol.shape = btn.dataset.shape; drawOutline();
+}));
+document.querySelectorAll('[data-style]').forEach(btn => btn.addEventListener('click', () => {
+  document.querySelectorAll('[data-style]').forEach(b => b.classList.remove('on'));
+  btn.classList.add('on'); ol.style = btn.dataset.style; drawOutline();
+}));
+
+document.getElementById('ol-xor').addEventListener('click', function() {
+  ol.xor = !ol.xor; this.classList.toggle('on', ol.xor); drawOutline();
+});
+document.getElementById('ol-bg').addEventListener('click', function() {
+  ol.beigeBg = !ol.beigeBg;
+  this.classList.toggle('on', ol.beigeBg);
+  olWrap.classList.toggle('bg-beige', ol.beigeBg);
+  drawOutline();
+});
+
+// ── SVG shape path (returns SVG path d-string) ────────────────────────────────
+function shapePathSVGd(cx, cy, r, type) {
+  const f = n => Math.round(n * 100) / 100;
+  // Hulp: volledige cirkel als SVG-pad (CW of CCW via sweep-flag)
+  const circle = (x, y, radius, cw = true) => {
+    const sw = cw ? 1 : 0;
+    return `M ${f(x+radius)},${f(y)} A ${f(radius)},${f(radius)} 0 1,${sw} ${f(x-radius)},${f(y)} A ${f(radius)},${f(radius)} 0 1,${sw} ${f(x+radius)},${f(y)} Z`;
+  };
+  switch (type) {
+
+    case 'via': {
+      // Buitenste ring CW + binnenste ring CCW → gat met nonzero winding
+      const iR = r * 0.40;
+      return circle(cx, cy, r, true) + ' ' + circle(cx, cy, iR, false);
+    }
+
+    case 'pad': {
+      const pw = f(r * 1.3), ph = f(r * 0.52);
+      const rx = f(ph); // border-radius = ph (stadium)
+      return `M ${f(cx-pw+ph)},${f(cy-ph)} h ${f(pw*2-ph*2)} a ${rx},${rx} 0 0,1 ${rx},${rx} v ${f(ph*2-ph*2)} a ${rx},${rx} 0 0,1 ${f(-rx)},${rx} h ${f(-(pw*2-ph*2))} a ${rx},${rx} 0 0,1 ${f(-rx)},${f(-rx)} a ${rx},${rx} 0 0,1 ${rx},${f(-rx)} Z`;
+    }
+
+    case 'smd': {
+      const s = f(r * 0.88);
+      return `M ${f(cx-s)},${f(cy-s)} h ${f(s*2)} v ${f(s*2)} h ${f(-s*2)} Z`;
+    }
+
+    case 'tracepad': {
+      const pR   = r * 0.36;
+      const dist = r * 0.85;
+      const trH  = r * 0.14;
+      const tx   = -dist + pR * 0.7;
+      return (
+        circle(cx - dist, cy, pR, true) + ' ' +
+        circle(cx + dist, cy, pR, true) + ' ' +
+        `M ${f(cx+tx)},${f(cy-trH)} L ${f(cx-tx)},${f(cy-trH)} L ${f(cx-tx)},${f(cy+trH)} L ${f(cx+tx)},${f(cy+trH)} Z`
+      );
+    }
+
+    case 'trace': {
+      const th = f(r * 0.16);
+      return `M ${f(cx-r)},${f(cy-th)} h ${f(r*2)} v ${f(th*2)} h ${f(-r*2)} Z`;
+    }
+
+    default: return '';
+  }
+}
+
+// ── Export SVG ─────────────────────────────────────────────────────────────────
+document.getElementById('btn-svg').addEventListener('click', () => {
+  if (!ol.font) return;
+
+  const S      = ol.scale;
+  const glyphs = ol.font.glyphs;
+  const letters = ol.text.split('').filter(l => glyphs[l]);
+
+  function advance(l) {
+    const g = ol.font.glyphs[l]; if (!g) return 0;
+    const pts  = Array.isArray(g) ? g : (g.points ?? []);
+    const lsb  = ol.font.lsb?.[l] ?? g.lsb ?? 0;
+    const rsb  = ol.font.rsb?.[l] ?? g.rsb ?? 2;
+    const maxX = pts.length ? Math.max(...pts.map(p => p[0])) : 0;
+    return lsb + maxX + rsb;
+  }
+
+  const totalWidth = letters.reduce((s, l) => s + advance(l), 0);
+  const fontHeight = Y_MAX_OL - Y_MIN_OL;
+  const PAD        = Math.max(ol.radius * 2 + 10, 30);
+  const W          = Math.ceil(totalWidth * S + PAD * 2);
+  const H          = Math.ceil(fontHeight  * S + PAD * 2);
+  const baselineY  = PAD + Y_MAX_OL * S;
+
+  let allD = '';
+  let curX = PAD, sampleIdx = 0;
+
+  for (const letter of letters) {
+    const g   = ol.font.glyphs[letter]; if (!g) continue;
+    const pts = Array.isArray(g) ? g : (g.points ?? []);
+    const lsb = ol.font.lsb?.[letter] ?? g.lsb ?? 0;
+    const samples = sampleStroke(pts, ol.spacing);
+
+    for (const [fx, fy] of samples) {
+      const cx   = curX + lsb * S + fx * S;
+      const cy   = baselineY - fy * S;
+      const type = ol.shape === 'mix' ? MIX_SHAPES[sampleIdx % MIX_SHAPES.length] : ol.shape;
+      allD += ' ' + shapePathSVGd(cx, cy, ol.radius, type);
+      sampleIdx++;
+    }
+    curX += advance(letter) * S;
+  }
+
+  // XOR → evenodd fill-rule (overlapping areas cut out, same as canvas XOR)
+  const fillRule  = ol.xor ? 'evenodd' : 'nonzero';
+  const col       = 'rgba(17,17,17,0.88)';
+  const bgCol     = ol.beigeBg ? '#f5f0e8' : '#ffffff';
+  const d         = allD.trim();
+
+  let pathEls = '';
+  if (ol.style === 'filled' || ol.style === 'both')
+    pathEls += `\n  <path d="${d}" fill="${col}" fill-rule="${fillRule}"/>`;
+  if (ol.style === 'outline' || ol.style === 'both')
+    pathEls += `\n  <path d="${d}" fill="none" stroke="${col}" stroke-width="${ol.strokeWidth}" fill-rule="${fillRule}"/>`;
+
+  const svg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+  <rect width="100%" height="100%" fill="${bgCol}"/>${pathEls}
+</svg>`;
+
+  const blob = new Blob([svg], { type: 'image/svg+xml' });
+  const a = Object.assign(document.createElement('a'), {
+    href: URL.createObjectURL(blob),
+    download: `outline-${ol.text || 'font'}-${ol.shape}.svg`,
+  });
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+// ── Export JSON ──────────────────────────────────────────────────────────────────
+document.getElementById('btn-export').addEventListener('click', () => {
+  if (!ol.font) return;
+  const exportedGlyphs = {};
+  for (const [letter, g] of Object.entries(ol.font.glyphs)) {
+    const pts = Array.isArray(g) ? g : (g.points ?? []);
+    if (!pts.length) continue;
+    const samples = sampleStroke(pts, ol.spacing);
+    exportedGlyphs[letter] = {
+      lsb:    ol.font.lsb?.[letter] ?? g.lsb ?? 0,
+      rsb:    ol.font.rsb?.[letter] ?? g.rsb ?? 2,
+      points: samples.map(([x, y]) => [Math.round(x*1000)/1000, Math.round(y*1000)/1000]),
+    };
+  }
+  const output = {
+    name: `outline-${ol.font.name ?? 'font'}`, xHeight: ol.font.xHeight ?? 9,
+    meta: { source: ol.font.name, spacing: ol.spacing, shape: ol.shape, radius: ol.radius },
+    glyphs: exportedGlyphs,
+  };
+  const blob = new Blob([JSON.stringify(output, null, 2)], { type: 'application/json' });
+  const a = Object.assign(document.createElement('a'), {
+    href: URL.createObjectURL(blob),
+    download: `${output.name}-s${ol.spacing}-r${ol.radius}.json`,
+  });
+  a.click(); URL.revokeObjectURL(a.href);
+});
+</script>
+</body>
+</html>
