@@ -209,6 +209,20 @@
     <button id="btn-undo" disabled title="Cmd/Ctrl+Z">↩ Undo</button>
     <button id="btn-redo" disabled title="Cmd/Ctrl+Shift+Z">↪ Redo</button>
     <div class="sep"></div>
+    <button id="btn-ortho90" title="Snap naar 90° (o)">⊾ 90°</button>
+    <button id="btn-ortho45" title="Snap naar 45° (O)">⊿ 45°</button>
+    <button id="btn-new-path" title="Start nieuw los pad voor deze letter (n)">⊕ Pad</button>
+    <div class="sep"></div>
+    <div class="metric-group">
+      <span class="metric-lbl">Grid:</span>
+      <select id="sel-grid" class="inp-metric" style="width:90px;cursor:pointer" title="Rasterfijnheid">
+        <option value="14">Fijn (14)</option>
+        <option value="21">Tussen (21)</option>
+        <option value="28" selected>Normaal (28)</option>
+        <option value="42">Grof (42)</option>
+      </select>
+    </div>
+    <div class="sep"></div>
     <div class="metric-group">
       <span class="metric-lbl">Links:</span>
       <input id="inp-lsb" class="inp-metric" type="number" min="-5" max="20" value="0">
@@ -232,6 +246,7 @@
     <div id="json-buttons">
       <button id="btn-copy">Copy JSON</button>
       <button id="btn-load">Load JSON</button>
+      <button id="btn-reset-file" title="Wis autosave en herlaad het originele bestand">↺ Reset</button>
     </div>
   </div>
 
@@ -275,26 +290,56 @@
     </div>
 
     <div class="row">
-      <label>Vorm</label>
-      <button class="on"  data-shape="via">◎</button>
-      <button data-shape="pad">▬</button>
-      <button data-shape="smd">□</button>
-      <button data-shape="tracepad">⊟</button>
-      <button data-shape="trace">—</button>
-      <button data-shape="mix">Mix</button>
+      <label>Modus</label>
+      <button class="on" id="ol-mode-shapes">Vormen</button>
+      <button id="ol-mode-path">Pad Outline</button>
+      <div class="sep-v"></div>
+      <button id="ol-skeleton" title="Toon skelet over de preview">Skelet</button>
     </div>
 
-    <div class="row">
-      <label>Stijl</label>
-      <button data-style="filled">Gevuld</button>
-      <button class="on" data-style="outline">Outline</button>
-      <button data-style="both">Beide</button>
-      <div class="sep-v"></div>
-      <label>Overlap</label>
-      <button id="ol-xor">XOR</button>
-      <div class="sep-v"></div>
-      <label>BG</label>
-      <button id="ol-bg">Beige</button>
+    <div id="ol-shapes-section">
+      <div class="row">
+        <label>Vorm</label>
+        <button class="on"  data-shape="via">◎</button>
+        <button data-shape="pad">▬</button>
+        <button data-shape="smd">□</button>
+        <button data-shape="tracepad">⊟</button>
+        <button data-shape="trace">—</button>
+        <button data-shape="mix">Mix</button>
+      </div>
+
+      <div class="row">
+        <label>Stijl</label>
+        <button data-style="filled">Gevuld</button>
+        <button class="on" data-style="outline">Outline</button>
+        <button data-style="both">Beide</button>
+        <div class="sep-v"></div>
+        <label>Overlap</label>
+        <button id="ol-xor">XOR</button>
+        <div class="sep-v"></div>
+        <label>BG</label>
+        <button id="ol-bg">Beige</button>
+      </div>
+    </div>
+
+    <div id="ol-path-section" style="display:none">
+      <div class="row">
+        <label>Breedte</label>
+        <input type="range" id="ol-path-width" min="0.3" max="8" step="0.1" value="2">
+        <span class="val" id="ol-val-path-width">2.0</span>
+        <div class="sep-v"></div>
+        <label>Hoeken</label>
+        <button id="ol-path-corners">Rond</button>
+      </div>
+      <div class="row">
+        <label>BG</label>
+        <button id="ol-path-bg">Beige</button>
+        <div class="sep-v"></div>
+        <label>Bron</label>
+        <button id="ol-load-font" title="Laad een apart font JSON (bijv. nee2.json of een outline-export)">📂 Font laden</button>
+        <input type="file" id="ol-file-input" accept=".json" style="display:none">
+        <span id="ol-font-name" style="font-size:10px;color:#999;">editor font</span>
+      </div>
     </div>
 
   </div>
@@ -304,8 +349,9 @@
   </div>
 
   <div id="ol-export-bar">
-    <button id="btn-export">⬇ JSON</button>
+    <button id="btn-export">⬇ JSON (vormen)</button>
     <button id="btn-svg">⬇ SVG</button>
+    <button id="btn-export-path">⬇ JSON (pad)</button>
   </div>
 
 </aside>
@@ -348,6 +394,13 @@ const ol = {
   spacing: 0.35, radius: 7, strokeWidth: 1.5,
   style: 'outline', shape: 'via',
   xor: false, scale: 16, beigeBg: false,
+  // pad outline mode
+  mode: 'shapes',      // 'shapes' | 'path'
+  pathWidth: 2,
+  pathCorners: 'round',
+  pathBeigeBg: false,
+  loadedFont: null,
+  skeleton: false,     // toon skelet over de rendering
 };
 
 const Y_MAX_OL  = 16;
@@ -359,27 +412,40 @@ const olCtx    = olCanvas.getContext('2d');
 const olWrap   = document.getElementById('ol-canvas-wrap');
 
 window.addEventListener('fontChanged', () => {
-  if (!ol.font && window._studioFont) ol.font = window._studioFont;
-  drawOutline();
+  // Altijd bijwerken — als state.font vervangen wordt (bijv. via localStorage restore
+  // of Load JSON), moet ol.font de nieuwe referentie krijgen
+  if (window._studioFont) ol.font = window._studioFont;
+  drawCurrent();
 });
 requestAnimationFrame(() => {
-  if (!ol.font && window._studioFont) { ol.font = window._studioFont; drawOutline(); }
+  if (window._studioFont) { ol.font = window._studioFont; drawCurrent(); }
 });
 
 function sampleStroke(pts, spacing) {
   if (!pts || pts.length === 0) return [];
-  const out = [];
-  for (let i = 0; i < pts.length - 1; i++) {
-    const [x0, y0] = pts[i], [x1, y1] = pts[i + 1];
-    const dx = x1 - x0, dy = y1 - y0;
-    const len = Math.hypot(dx, dy);
-    const steps = Math.max(1, Math.floor(len / spacing));
-    for (let s = 0; s < steps; s++) {
-      const t = s / steps;
-      out.push([x0 + dx * t, y0 + dy * t]);
-    }
+  // Splits bij break-vlag (pt[2] = 1 → nieuw pad), sample elk subpad apart
+  const subpaths = [];
+  let cur = [];
+  for (const pt of pts) {
+    if (pt[2] && cur.length > 0) { subpaths.push(cur); cur = []; }
+    cur.push(pt);
   }
-  out.push([...pts[pts.length - 1]]);
+  if (cur.length > 0) subpaths.push(cur);
+
+  const out = [];
+  for (const sub of subpaths) {
+    for (let i = 0; i < sub.length - 1; i++) {
+      const [x0, y0] = sub[i], [x1, y1] = sub[i + 1];
+      const dx = x1 - x0, dy = y1 - y0;
+      const len = Math.hypot(dx, dy);
+      const steps = Math.max(1, Math.floor(len / spacing));
+      for (let s = 0; s < steps; s++) {
+        const t = s / steps;
+        out.push([x0 + dx * t, y0 + dy * t]);
+      }
+    }
+    if (sub.length > 0) out.push([...sub[sub.length - 1]]);
+  }
   return out;
 }
 
@@ -498,15 +564,223 @@ function drawOutline() {
   olCtx.drawImage(off, 0, 0);
 }
 
+// ── Pad outline renderer ────────────────────────────────────────────────────────
+function drawPathOutline() {
+  const font = ol.loadedFont || ol.font;
+  if (!font) return;
+  const S = ol.scale;
+  const glyphs = font.glyphs;
+  const letters = ol.text.split('').filter(l => glyphs[l]);
+
+  function advance(l) {
+    const g = glyphs[l]; if (!g) return 0;
+    const pts  = Array.isArray(g) ? g : (g.points ?? []);
+    const lsb  = font.lsb?.[l] ?? g.lsb ?? 0;
+    const rsb  = font.rsb?.[l] ?? g.rsb ?? 2;
+    const maxX = pts.length ? Math.max(...pts.map(p => p[0])) : 0;
+    return lsb + maxX + rsb;
+  }
+
+  const totalWidth = letters.reduce((s, l) => s + advance(l), 0);
+  const fontHeight = Y_MAX_OL - Y_MIN_OL;
+  const PAD = Math.max(ol.pathWidth * S * 0.6 + 10, 20);
+  const W   = totalWidth * S + PAD * 2;
+  const H   = fontHeight  * S + PAD * 2;
+
+  olCanvas.width  = Math.ceil(W);
+  olCanvas.height = Math.ceil(H);
+
+  const bgCol = ol.pathBeigeBg ? '#f5f0e8' : '#ffffff';
+  olCtx.fillStyle = bgCol;
+  olCtx.fillRect(0, 0, olCanvas.width, olCanvas.height);
+
+  const baselineY = PAD + Y_MAX_OL * S;
+  const isRound = ol.pathCorners === 'round';
+
+  olCtx.strokeStyle = 'rgba(17,17,17,0.9)';
+  olCtx.lineWidth   = ol.pathWidth * S;
+  olCtx.lineJoin    = isRound ? 'round' : 'miter';
+  olCtx.lineCap     = isRound ? 'round' : 'square';
+  olCtx.miterLimit  = isRound ? 10 : 3;
+
+  let curX = PAD;
+  for (const letter of letters) {
+    const g   = glyphs[letter]; if (!g) continue;
+    const pts = Array.isArray(g) ? g : (g.points ?? []);
+    const lsb = font.lsb?.[letter] ?? g.lsb ?? 0;
+
+    if (pts.length >= 2) {
+      olCtx.beginPath();
+      for (let i = 0; i < pts.length; i++) {
+        const px = curX + (lsb + pts[i][0]) * S, py = baselineY - pts[i][1] * S;
+        if (i === 0 || pts[i][2]) olCtx.moveTo(px, py);
+        else                       olCtx.lineTo(px, py);
+      }
+      olCtx.stroke();
+    }
+    curX += advance(letter) * S;
+  }
+}
+
+function drawSkeleton(font) {
+  if (!font) return;
+  const S = ol.scale;
+  const glyphs = font.glyphs;
+  const letters = ol.text.split('').filter(l => glyphs[l]);
+
+  function advance(l) {
+    const g = glyphs[l]; if (!g) return 0;
+    const pts  = Array.isArray(g) ? g : (g.points ?? []);
+    const lsb  = font.lsb?.[l] ?? g.lsb ?? 0;
+    const rsb  = font.rsb?.[l] ?? g.rsb ?? 2;
+    const maxX = pts.length ? Math.max(...pts.map(p => p[0])) : 0;
+    return lsb + maxX + rsb;
+  }
+
+  const totalWidth = letters.reduce((s, l) => s + advance(l), 0);
+  const fontHeight = Y_MAX_OL - Y_MIN_OL;
+  const PAD = 30;
+  const W   = totalWidth * S + PAD * 2;
+  const H   = fontHeight  * S + PAD * 2;
+
+  olCanvas.width  = Math.ceil(W);
+  olCanvas.height = Math.ceil(H);
+
+  olCtx.fillStyle = '#ffffff';
+  olCtx.fillRect(0, 0, olCanvas.width, olCanvas.height);
+
+  const baselineY = PAD + Y_MAX_OL * S;
+
+  // Skeletpaden in zwart
+  olCtx.strokeStyle = '#111';
+  olCtx.lineWidth = 1.5;
+  olCtx.lineCap = 'round';
+  olCtx.lineJoin = 'round';
+  olCtx.setLineDash([]);
+
+  let curX = PAD;
+  for (const letter of letters) {
+    const g   = glyphs[letter]; if (!g) continue;
+    const pts = Array.isArray(g) ? g : (g.points ?? []);
+    const lsb = font.lsb?.[letter] ?? g.lsb ?? 0;
+
+    if (pts.length >= 2) {
+      olCtx.beginPath();
+      for (let i = 0; i < pts.length; i++) {
+        const px = curX + (lsb + pts[i][0]) * S, py = baselineY - pts[i][1] * S;
+        if (i === 0 || pts[i][2]) olCtx.moveTo(px, py);
+        else                       olCtx.lineTo(px, py);
+      }
+      olCtx.stroke();
+    }
+
+    // Advance-lijn in zwart gestippeld
+    const adv = advance(letter);
+    const advX = curX + adv * S;
+    olCtx.save();
+    olCtx.strokeStyle = 'rgba(0,0,0,0.3)';
+    olCtx.lineWidth = 1;
+    olCtx.setLineDash([4, 3]);
+    olCtx.beginPath();
+    olCtx.moveTo(advX, baselineY - Y_MAX_OL * S);
+    olCtx.lineTo(advX, baselineY - Y_MIN_OL * S);
+    olCtx.stroke();
+    olCtx.restore();
+
+    curX += adv * S;
+  }
+}
+
+function drawCurrent() {
+  if (ol.skeleton) drawSkeleton(ol.loadedFont || ol.font);
+  else if (ol.mode === 'path') drawPathOutline();
+  else drawOutline();
+}
+
+// ── Skelet toggle ──────────────────────────────────────────────────────────────
+document.getElementById('ol-skeleton').addEventListener('click', function() {
+  ol.skeleton = !ol.skeleton;
+  this.classList.toggle('on', ol.skeleton);
+  drawCurrent();
+});
+
+// ── Mode switch ─────────────────────────────────────────────────────────────────
+document.getElementById('ol-mode-shapes').addEventListener('click', function() {
+  ol.mode = 'shapes';
+  this.classList.add('on');
+  document.getElementById('ol-mode-path').classList.remove('on');
+  document.getElementById('ol-shapes-section').style.display = '';
+  document.getElementById('ol-path-section').style.display = 'none';
+  drawCurrent();
+});
+document.getElementById('ol-mode-path').addEventListener('click', function() {
+  ol.mode = 'path';
+  this.classList.add('on');
+  document.getElementById('ol-mode-shapes').classList.remove('on');
+  document.getElementById('ol-shapes-section').style.display = 'none';
+  document.getElementById('ol-path-section').style.display = '';
+  drawCurrent();
+});
+
+// Pad outline controls
+const pathWidthSlider = document.getElementById('ol-path-width');
+pathWidthSlider.addEventListener('input', () => {
+  ol.pathWidth = parseFloat(pathWidthSlider.value);
+  document.getElementById('ol-val-path-width').textContent = ol.pathWidth.toFixed(1);
+  drawCurrent();
+});
+document.getElementById('ol-path-corners').addEventListener('click', function() {
+  ol.pathCorners = ol.pathCorners === 'round' ? 'miter' : 'round';
+  this.textContent = ol.pathCorners === 'round' ? 'Rond' : 'Hoek';
+  drawCurrent();
+});
+document.getElementById('ol-path-bg').addEventListener('click', function() {
+  ol.pathBeigeBg = !ol.pathBeigeBg;
+  this.classList.toggle('on', ol.pathBeigeBg);
+  olWrap.classList.toggle('bg-beige', ol.pathBeigeBg);
+  drawCurrent();
+});
+
+// Load separate font JSON
+const olFileInput = document.getElementById('ol-file-input');
+document.getElementById('ol-load-font').addEventListener('click', () => olFileInput.click());
+olFileInput.addEventListener('change', e => {
+  const file = e.target.files[0]; if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    try {
+      const parsed = JSON.parse(ev.target.result);
+      // Normalize — same logic as ensureMetrics in editor.js
+      if (!parsed.lsb) {
+        parsed.lsb = {}; parsed.rsb = {};
+        for (const [k, v] of Object.entries(parsed.glyphs)) {
+          if (v && !Array.isArray(v)) {
+            parsed.lsb[k] = v.lsb ?? 0;
+            parsed.rsb[k] = v.rsb ?? 2;
+            parsed.glyphs[k] = v.points ?? [];
+          } else {
+            parsed.lsb[k] = 0; parsed.rsb[k] = 2;
+          }
+        }
+      }
+      ol.loadedFont = parsed;
+      document.getElementById('ol-font-name').textContent = parsed.name ?? file.name;
+      drawCurrent();
+    } catch { alert('Ongeldig JSON bestand'); }
+  };
+  reader.readAsText(file);
+  olFileInput.value = '';
+});
+
 // ── Events ─────────────────────────────────────────────────────────────────────
-document.getElementById('ol-text').addEventListener('input', e => { ol.text = e.target.value; drawOutline(); });
+document.getElementById('ol-text').addEventListener('input', e => { ol.text = e.target.value; drawCurrent(); });
 
 function slider(id, valId, key, fmt) {
   const sl = document.getElementById(id), vl = document.getElementById(valId);
   sl.addEventListener('input', () => {
     ol[key] = fmt === 'int' ? parseInt(sl.value) : parseFloat(sl.value);
     vl.textContent = fmt === 'int' ? ol[key] : Number(ol[key]).toFixed(2);
-    drawOutline();
+    drawCurrent();
   });
 }
 slider('ol-spacing', 'ol-val-spacing', 'spacing',     'float');
@@ -516,21 +790,21 @@ slider('ol-scale',   'ol-val-scale',   'scale',       'int');
 
 document.querySelectorAll('[data-shape]').forEach(btn => btn.addEventListener('click', () => {
   document.querySelectorAll('[data-shape]').forEach(b => b.classList.remove('on'));
-  btn.classList.add('on'); ol.shape = btn.dataset.shape; drawOutline();
+  btn.classList.add('on'); ol.shape = btn.dataset.shape; drawCurrent();
 }));
 document.querySelectorAll('[data-style]').forEach(btn => btn.addEventListener('click', () => {
   document.querySelectorAll('[data-style]').forEach(b => b.classList.remove('on'));
-  btn.classList.add('on'); ol.style = btn.dataset.style; drawOutline();
+  btn.classList.add('on'); ol.style = btn.dataset.style; drawCurrent();
 }));
 
 document.getElementById('ol-xor').addEventListener('click', function() {
-  ol.xor = !ol.xor; this.classList.toggle('on', ol.xor); drawOutline();
+  ol.xor = !ol.xor; this.classList.toggle('on', ol.xor); drawCurrent();
 });
 document.getElementById('ol-bg').addEventListener('click', function() {
   ol.beigeBg = !ol.beigeBg;
   this.classList.toggle('on', ol.beigeBg);
   olWrap.classList.toggle('bg-beige', ol.beigeBg);
-  drawOutline();
+  drawCurrent();
 });
 
 // ── SVG shape path (returns SVG path d-string) ────────────────────────────────
@@ -673,6 +947,38 @@ document.getElementById('btn-export').addEventListener('click', () => {
   const a = Object.assign(document.createElement('a'), {
     href: URL.createObjectURL(blob),
     download: `${output.name}-s${ol.spacing}-r${ol.radius}.json`,
+  });
+  a.click(); URL.revokeObjectURL(a.href);
+});
+
+// ── Export pad outline JSON ───────────────────────────────────────────────────
+document.getElementById('btn-export-path').addEventListener('click', () => {
+  const font = ol.loadedFont || ol.font;
+  if (!font) return;
+  const output = {
+    type: 'path-outline',
+    name: `outline-${font.name ?? 'font'}`,
+    xHeight: font.xHeight ?? 9,
+    meta: {
+      source: font.name,
+      strokeWidth: ol.pathWidth,
+      corners: ol.pathCorners,
+    },
+    glyphs: {},
+  };
+  for (const [letter, g] of Object.entries(font.glyphs)) {
+    const pts = Array.isArray(g) ? g : (g.points ?? []);
+    if (!pts.length) continue;
+    output.glyphs[letter] = {
+      lsb:    font.lsb?.[letter] ?? g.lsb ?? 0,
+      rsb:    font.rsb?.[letter] ?? g.rsb ?? 2,
+      points: pts,
+    };
+  }
+  const blob = new Blob([JSON.stringify(output, null, 2)], { type: 'application/json' });
+  const a = Object.assign(document.createElement('a'), {
+    href: URL.createObjectURL(blob),
+    download: `${output.name}-w${ol.pathWidth}-${ol.pathCorners}.json`,
   });
   a.click(); URL.revokeObjectURL(a.href);
 });
